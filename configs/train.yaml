@@ -56,6 +56,11 @@ training:
   # Re-render metric and attention plots every N epochs.
   plot_every: 5
 
+  # Monitor subject embedding collapse with per-stage cosine similarity.
+  # none | train | val | all
+  embedding_monitor: val
+  embedding_monitor_every: 1
+
 model:
   # full | ablation_no_rotary
   model: full

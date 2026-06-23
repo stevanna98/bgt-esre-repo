@@ -167,7 +167,12 @@ class BGTESREModelAblation(nn.Module):
 
     # ─────────────────────────────────────────────────────────────────────────
 
-    def forward(self, data: Data, epoch: int = 0) -> dict:
+    def forward(
+        self,
+        data: Data,
+        epoch: int = 0,
+        return_stage_embeddings: bool = False,
+    ) -> dict:
         """Run the ablation forward pass.
 
         Args:
@@ -209,19 +214,30 @@ class BGTESREModelAblation(nn.Module):
                 "that the selected dataset loader matches the BOLD axis order."
             )
 
+        stage_embeddings = {}
+        if return_stage_embeddings:
+            stage_embeddings["encoder"] = scatter_mean(h, batch, dim=0)
+
         # ── 2. Morphospace injection ──────────────────────────────────────
         phi_node = scatter_mean(
             data.phi, data.edge_index[0], dim=0, dim_size=N
         )                                                # (N, 2)
         h = h + self.phi_proj(phi_node)                  # (N, d)
+        if return_stage_embeddings:
+            stage_embeddings["morphospace_injected"] = scatter_mean(h, batch, dim=0)
 
         # ── 3. Transformer layers (no virtual node update) ────────────────
-        for layer in self.layers:
+        for layer_idx, layer in enumerate(self.layers, start=1):
             h = layer(h, data.edge_index, data.phi)      # (N, d)
+            if return_stage_embeddings:
+                stage_embeddings[f"layer_{layer_idx}"] = scatter_mean(h, batch, dim=0)
 
         # ── 4. Final norm + readout (mean pooling only) ───────────────────
         h       = self.final_norm(h)                     # (N, d)
         h_graph = scatter_mean(h, batch, dim=0)          # (G, d)
+        if return_stage_embeddings:
+            stage_embeddings["final"] = h_graph
+            stage_embeddings["readout_input"] = h_graph
         logits  = self.readout(h_graph)                  # (G, C)
 
         # ── 5. Cached attention weights ───────────────────────────────────
@@ -230,4 +246,7 @@ class BGTESREModelAblation(nn.Module):
         # ── 6. Loss ───────────────────────────────────────────────────────
         loss = self.loss_fn(logits=logits, y=data.y)
 
-        return dict(logits=logits, h=h, loss=loss, alpha=alpha_last)
+        result = dict(logits=logits, h=h, loss=loss, alpha=alpha_last)
+        if return_stage_embeddings:
+            result["stage_embeddings"] = stage_embeddings
+        return result

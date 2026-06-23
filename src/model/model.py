@@ -89,7 +89,12 @@ class BGTESREModel(nn.Module):
 
     # ──────────────────────────────────────────────────────────────────────────
 
-    def forward(self, data: Data, epoch: int = 0) -> dict:
+    def forward(
+        self,
+        data: Data,
+        epoch: int = 0,
+        return_stage_embeddings: bool = False,
+    ) -> dict:
         """Run the full forward pass.
 
         Args:
@@ -150,11 +155,15 @@ class BGTESREModel(nn.Module):
                 "that the selected dataset loader matches the BOLD axis order."
             )
 
+        stage_embeddings = {}
+        if return_stage_embeddings:
+            stage_embeddings["encoder"] = scatter_mean(h, batch, dim=0)
+
         vn_h = self.vn_emb.weight.expand(B, -1)              # (B, hidden_dim)
 
         # ── 2. Transformer layers with virtual node update ─────────────────
         d = h.shape[-1]
-        for layer in self.layers:
+        for layer_idx, layer in enumerate(self.layers, start=1):
             h = layer(h, data.edge_index, data.phi)
 
             # Virtual node: aggregate from real nodes, normalise to prevent
@@ -162,13 +171,19 @@ class BGTESREModel(nn.Module):
             vn_agg = scatter_mean(h, batch, dim=0)           # (G, d)
             vn_h   = F.layer_norm(vn_h + vn_agg, [d])       # (G, d)
             h      = h + vn_h[batch]                         # (N, d)
+            if return_stage_embeddings:
+                stage_embeddings[f"layer_{layer_idx}"] = scatter_mean(h, batch, dim=0)
 
         # ──3. Final normalisation ─────────────────────────────────────────
         h = self.final_norm(h)
+        h_graph = scatter_mean(h, batch, dim=0)                        # (G, d)
+        readout_input = torch.cat([h_graph, vn_h], dim=-1)
+        if return_stage_embeddings:
+            stage_embeddings["final"] = h_graph
+            stage_embeddings["readout_input"] = readout_input
 
         # ── 4. Readout ─────────────────────────────────────────────────
-        h_graph = scatter_mean(h, batch, dim=0)                        # (G, d)
-        logits = self.readout(torch.cat([h_graph, vn_h], dim=-1))      # (G, num_classes)
+        logits = self.readout(readout_input)                           # (G, num_classes)
 
         # ── 5. Collect cached attention weights from the last layer ────────
         alpha_last = self.layers[-1].get_last_alpha()
@@ -179,9 +194,12 @@ class BGTESREModel(nn.Module):
             y=data.y,
         )
 
-        return dict(
+        result = dict(
             logits=logits,
             h=h,
             loss=loss,
             alpha=alpha_last,
         )
+        if return_stage_embeddings:
+            result["stage_embeddings"] = stage_embeddings
+        return result

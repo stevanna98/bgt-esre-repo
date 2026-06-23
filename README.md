@@ -43,3 +43,23 @@ Equivalent config-style overrides are also supported:
 ```bash
 python scripts/train_kfold.py --config configs/train.yaml --set model.no_bold_encoder=true
 ```
+
+## Embedding Collapse Monitor
+
+Training saves per-stage subject cosine-similarity heatmaps by default for the validation split every epoch:
+
+```text
+runs/<run>/fold_<k>/plots/embedding_similarity/epoch_001/
+runs/<run>/fold_<k>/plots/embedding_collapse_mean_cosine.png
+runs/<run>/fold_<k>/embeddings/epoch_001/
+runs/<run>/fold_<k>/embeddings/collapse_metrics.jsonl
+```
+
+The stages include `encoder`, each transformer `layer_<n>`, `final`, and `readout_input`.
+
+Control this in `configs/train.yaml`:
+
+```yaml
+embedding_monitor: val        # none | train | val | all
+embedding_monitor_every: 1
+```

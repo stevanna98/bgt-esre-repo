@@ -63,6 +63,8 @@ from src.utils.config import (
 )
 from src.utils.metrics import compute_metrics
 from src.utils.plotting import (
+    plot_cosine_similarity_heatmap,
+    plot_embedding_collapse_trends,
     plot_attention_heatmap,
     plot_attention_per_label,
     plot_metric_train_val,
@@ -235,6 +237,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Minimum LR floor (default 1e-6)")
     p.add_argument("--plot-every",  type=int,   default=5,
                    help="Refresh plots every N epochs (default 5)")
+    p.add_argument("--embedding-monitor",
+                   choices=["none", "train", "val", "all"],
+                   default="val",
+                   help="Split used for per-stage subject cosine-similarity plots")
+    p.add_argument("--embedding-monitor-every", type=int, default=1,
+                   help="Refresh embedding-collapse plots every N epochs")
     p.add_argument("--out-dir",     default=None,
                    help="Output directory (default: runs/{dataset}_{timestamp})")
     p.add_argument("--seed",        type=int,   default=42)
@@ -566,6 +574,98 @@ def save_attention(
     plot_attention_per_label(attn_per_label, plots_dir)
 
 
+def _cosine_similarity_matrix(emb: np.ndarray) -> np.ndarray:
+    emb = emb.astype(np.float32, copy=False)
+    norm = np.linalg.norm(emb, axis=1, keepdims=True)
+    emb_norm = emb / np.clip(norm, 1e-12, None)
+    sim = emb_norm @ emb_norm.T
+    return np.clip(sim, -1.0, 1.0).astype(np.float32)
+
+
+def _embedding_similarity_stats(sim: np.ndarray) -> dict:
+    n = sim.shape[0]
+    if n <= 1:
+        return dict(
+            n_subjects=n,
+            mean_offdiag=float("nan"),
+            median_offdiag=float("nan"),
+            max_offdiag=float("nan"),
+            min_offdiag=float("nan"),
+            std_offdiag=float("nan"),
+        )
+    mask = ~np.eye(n, dtype=bool)
+    vals = sim[mask]
+    return dict(
+        n_subjects=n,
+        mean_offdiag=float(np.mean(vals)),
+        median_offdiag=float(np.median(vals)),
+        max_offdiag=float(np.max(vals)),
+        min_offdiag=float(np.min(vals)),
+        std_offdiag=float(np.std(vals)),
+    )
+
+
+@torch.no_grad()
+def collect_stage_embeddings(
+    model: BGTESREModel,
+    loader: PyGDataLoader,
+    device: torch.device,
+) -> dict[str, np.ndarray]:
+    """Collect graph-level subject embeddings from each model stage."""
+    model.eval()
+    by_stage: dict[str, list[np.ndarray]] = defaultdict(list)
+    for batch in loader:
+        batch = batch.to(device)
+        out = model(batch, return_stage_embeddings=True)
+        for stage, emb in out["stage_embeddings"].items():
+            by_stage[stage].append(emb.detach().cpu().numpy())
+    return {
+        stage: np.concatenate(parts, axis=0)
+        for stage, parts in by_stage.items()
+        if parts
+    }
+
+
+def save_embedding_similarity_monitor(
+    model: BGTESREModel,
+    loader: PyGDataLoader,
+    device: torch.device,
+    epoch: int,
+    split: str,
+    plots_dir: Path,
+    embed_dir: Path,
+    trend_history: dict[str, list[float]],
+) -> None:
+    """Save per-stage subject cosine similarities and collapse metrics."""
+    stage_embeddings = collect_stage_embeddings(model, loader, device)
+    epoch_plot_dir = plots_dir / "embedding_similarity" / f"epoch_{epoch:03d}"
+    epoch_data_dir = embed_dir / f"epoch_{epoch:03d}"
+    epoch_plot_dir.mkdir(parents=True, exist_ok=True)
+    epoch_data_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics_path = embed_dir / "collapse_metrics.jsonl"
+    with metrics_path.open("a", encoding="utf-8") as f:
+        for stage, emb in stage_embeddings.items():
+            sim = _cosine_similarity_matrix(emb)
+            stats = _embedding_similarity_stats(sim)
+            np.save(epoch_data_dir / f"{stage}_embeddings.npy", emb)
+            np.save(epoch_data_dir / f"{stage}_cosine.npy", sim)
+            plot_cosine_similarity_heatmap(
+                sim,
+                epoch_plot_dir / f"{stage}.png",
+                title=f"{split} cosine similarity - {stage} - epoch {epoch}",
+            )
+
+            trend_history[stage].append(stats["mean_offdiag"])
+            record = dict(epoch=epoch, split=split, stage=stage, **stats)
+            f.write(json.dumps(record) + "\n")
+
+    plot_embedding_collapse_trends(
+        trend_history,
+        plots_dir / "embedding_collapse_mean_cosine.png",
+    )
+
+
 def _print_epoch(
     fold: int,
     epoch: int,
@@ -617,15 +717,24 @@ def train_fold(
 
     plots_dir = fold_out / "plots"
     attn_dir  = fold_out / "attn"
+    embed_dir = fold_out / "embeddings"
     plots_dir.mkdir(parents=True, exist_ok=True)
     attn_dir.mkdir(parents=True, exist_ok=True)
+    embed_dir.mkdir(parents=True, exist_ok=True)
 
     train_loader = PyGDataLoader(train_data, batch_size=args.batch_size,
                                  shuffle=True,  drop_last=False)
+    train_monitor_loader = PyGDataLoader(train_data, batch_size=args.batch_size,
+                                         shuffle=False, drop_last=False)
     val_loader   = PyGDataLoader(val_data,   batch_size=args.batch_size,
                                  shuffle=False, drop_last=False)
     all_loader   = PyGDataLoader(all_fold_data, batch_size=args.batch_size,
                                  shuffle=False, drop_last=False)
+    monitor_loaders = {
+        "train": train_monitor_loader,
+        "val": val_loader,
+        "all": all_loader,
+    }
 
     ModelCls = BGTESREModelAblation if getattr(args, "model", "full") == "ablation_no_rotary" else BGTESREModel
     model = ModelCls(cfg).to(device)
@@ -644,6 +753,7 @@ def train_fold(
         f"{split}_{m}": [] for split in ("train", "val") for m in METRIC_NAMES
     }
     history["lr"] = []
+    embedding_trend_history: dict[str, list[float]] = defaultdict(list)
 
     best_val_auc     = -float("inf")
     best_val_loss    =  float("inf")
@@ -699,6 +809,20 @@ def train_fold(
 
         # RSS snapshot
         peak_rss = max(peak_rss, psutil.Process().memory_info().rss)
+
+        monitor_split = getattr(args, "embedding_monitor", "val")
+        monitor_every = max(1, int(getattr(args, "embedding_monitor_every", 1)))
+        if monitor_split != "none" and epoch % monitor_every == 0:
+            save_embedding_similarity_monitor(
+                model=model,
+                loader=monitor_loaders[monitor_split],
+                device=device,
+                epoch=epoch,
+                split=monitor_split,
+                plots_dir=plots_dir,
+                embed_dir=embed_dir,
+                trend_history=embedding_trend_history,
+            )
 
         # Periodic plot + attention refresh
         if epoch % args.plot_every == 0 or epoch == args.epochs:
@@ -898,6 +1022,8 @@ def smoke_test() -> None:
         lr_factor    = 0.5
         min_lr       = 1e-6
         plot_every   = 2
+        embedding_monitor = "val"
+        embedding_monitor_every = 1
         seed         = 0
         device       = "cpu"
     args = _Args()

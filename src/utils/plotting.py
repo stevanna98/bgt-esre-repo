@@ -103,3 +103,44 @@ def plot_attention_per_label(
             out_dir / f"attn_label_{label}.png",
             title=f"Edge Attention — class {label}",
         )
+
+
+def plot_cosine_similarity_heatmap(
+    matrix: np.ndarray,
+    out_path: str | Path,
+    title: str,
+) -> None:
+    """Subject-by-subject cosine-similarity heatmap."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(matrix, cmap="coolwarm", vmin=-1.0, vmax=1.0, aspect="auto")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_title(title)
+    ax.set_xlabel("Subject")
+    ax.set_ylabel("Subject")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=100)
+    plt.close(fig)
+
+
+def plot_embedding_collapse_trends(
+    history: Dict[str, List[float]],
+    out_path: str | Path,
+) -> None:
+    """Plot mean off-diagonal cosine similarity per stage across epochs."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for stage, vals in sorted(history.items()):
+        ax.plot(range(1, len(vals) + 1), vals, label=stage)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Mean off-diagonal cosine similarity")
+    ax.set_ylim(-1.0, 1.0)
+    ax.set_title("Embedding collapse monitor")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=100)
+    plt.close(fig)
