@@ -75,8 +75,8 @@ model:
   dropout: 0.5
 
   # Subject-level readout over node embeddings:
-  # mean_std | mean | max | attention
-  readout_pool: mean_std
+  # flatten | mean_std | mean | max | attention
+  readout_pool: flatten
 
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
   # true: linear projection; normally use this for FC-only ad_lmci/nc_asd.

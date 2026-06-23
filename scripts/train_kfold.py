@@ -255,8 +255,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-heads",   type=int,   default=4)
     p.add_argument("--k-lap",       type=int,   default=16)
     p.add_argument("--dropout",     type=float, default=0.5)
-    p.add_argument("--readout-pool", choices=["mean", "mean_std", "max", "attention"],
-                   default="mean_std",
+    p.add_argument("--readout-pool",
+                   choices=["flatten", "mean", "mean_std", "max", "attention"],
+                   default="flatten",
                    help="Graph-level subject pooling for the classifier")
     # Precompute / graph
     p.add_argument("--morphospace-x", default="comm",

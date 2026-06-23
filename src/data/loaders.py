@@ -104,7 +104,7 @@ def load_islem(
     labels   = np.load(root / f"labels_{dataset_name}.npy") # (S,)
     coords   = np.load(root / "desikan_coords_left.npy")    # (N, 3)
 
-    fc_arr   = data_arr[:, :, :, 2]                         # (S, N, N)
+    fc_arr   = data_arr[:, :, :, 0]                         # (S, N, N)
 
     subjects = [
         SubjectRecord(

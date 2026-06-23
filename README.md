@@ -66,7 +66,7 @@ embedding_monitor_every: 1
 
 ## Subject Readout Pooling
 
-The default subject embedding concatenates the mean and standard deviation of brain-region node embeddings. This keeps the regional dispersion signal that plain mean pooling can wash out. You can replace it with plain mean, max, or learned attention pooling:
+The default subject embedding preserves atlas order by flattening the per-region node embeddings. This avoids washing out ROI-specific signal with graph-level averaging. You can replace it with mean+std, plain mean, max, or learned attention pooling:
 
 ```bash
 python scripts/train_kfold.py --config configs/train.yaml --readout-pool attention
@@ -76,5 +76,5 @@ or in YAML:
 
 ```yaml
 model:
-  readout_pool: mean_std   # mean_std | mean | max | attention
+  readout_pool: flatten   # flatten | mean_std | mean | max | attention
 ```

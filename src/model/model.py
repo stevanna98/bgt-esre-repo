@@ -84,8 +84,8 @@ class BGTESREModel(nn.Module):
         self.graph_readout = GraphReadout(
             model_cfg.hidden_dim,
             mode=model_cfg.readout_pool,
+            num_regions=model_cfg.num_regions,
         )
-        self.graph_readout_norm = nn.LayerNorm(self.graph_readout.output_dim)
 
         # ── Readout ───────────────────────────────────────────────────────
         # Concatenates graph-pooled node embeddings with the virtual node
@@ -103,7 +103,7 @@ class BGTESREModel(nn.Module):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _subject_readout(self, h: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
-        return self.graph_readout_norm(self.graph_readout(h, batch))
+        return self.graph_readout(h, batch)
 
     def forward(
         self,
