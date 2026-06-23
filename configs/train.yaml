@@ -44,11 +44,13 @@ training:
   # BOLD scaling fitted only on each training fold:
   # standard | minmax | none
   scaler: standard
+  selection_metric: loss
+  label_smoothing: 0.05
 
-  # Stop after this many epochs without validation-AUC improvement.
+  # Stop after this many epochs without improvement in selection_metric.
   patience: 15
 
-  # ReduceLROnPlateau settings, also driven by validation AUC.
+  # ReduceLROnPlateau settings, also driven by selection_metric.
   lr_patience: 5
   lr_factor: 0.5
   min_lr: 0.000001
@@ -73,6 +75,7 @@ model:
   # Currently precomputed but not used because normal training disables LapPE.
   k_lap: 16
   dropout: 0.5
+  readout_dropout: 0.5
 
   # Subject-level readout over node embeddings:
   # flatten | mean_std | mean | max | attention

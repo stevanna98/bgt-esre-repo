@@ -94,6 +94,7 @@ class BGTESREModel(nn.Module):
         readout_dim = self.graph_readout.output_dim
         if self._use_virtual_node:
             readout_dim += model_cfg.hidden_dim
+        self.readout_dropout = nn.Dropout(model_cfg.readout_dropout)
         self.readout = nn.Linear(
             readout_dim,
             model_cfg.num_classes,
@@ -216,7 +217,7 @@ class BGTESREModel(nn.Module):
             stage_embeddings["readout_input"] = readout_input
 
         # ── 4. Readout ─────────────────────────────────────────────────
-        logits = self.readout(readout_input)                           # (G, num_classes)
+        logits = self.readout(self.readout_dropout(readout_input))
 
         # ── 5. Collect cached attention weights from the last layer ────────
         alpha_last = self.layers[-1].get_last_alpha()

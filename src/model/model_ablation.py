@@ -165,6 +165,7 @@ class BGTESREModelAblation(nn.Module):
         )
 
         # ── Readout (no virtual node concatenation) ───────────────────────
+        self.readout_dropout = nn.Dropout(model_cfg.readout_dropout)
         self.readout = nn.Linear(
             self.graph_readout.output_dim,
             model_cfg.num_classes,
@@ -254,7 +255,7 @@ class BGTESREModelAblation(nn.Module):
         if return_stage_embeddings:
             stage_embeddings["final"] = h_graph
             stage_embeddings["readout_input"] = h_graph
-        logits  = self.readout(h_graph)                  # (G, C)
+        logits = self.readout(self.readout_dropout(h_graph))
 
         # ── 5. Cached attention weights ───────────────────────────────────
         alpha_last = self.layers[-1].get_last_alpha()

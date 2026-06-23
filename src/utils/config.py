@@ -38,12 +38,13 @@ class ModelConfig:
     use_bold_encoder: bool = False   # False → linear projection instead of CNN
     bold_in_t: Optional[int] = 35  # required when use_bold_encoder=False
     readout_pool: str = "flatten"  # "flatten" | "mean_std" | "mean" | "max" | "attention"
+    readout_dropout: float = 0.5
     use_virtual_node: bool = False
 
 
 @dataclass
 class LossConfig:
-    label_smoothing: float = 0.0
+    label_smoothing: float = 0.05
 
 
 @dataclass

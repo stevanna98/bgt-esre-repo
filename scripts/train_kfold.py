@@ -228,6 +228,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lr",          type=float, default=1e-4)
     p.add_argument("--weight-decay",type=float, default=5e-2)
     p.add_argument("--scaler",      choices=["standard", "minmax", "none"], default="standard")
+    p.add_argument("--selection-metric", choices=["auc", "loss"], default="loss",
+                   help="Validation metric used for checkpointing and early stopping")
     p.add_argument("--patience",    type=int,   default=15,
                    help="Early-stopping patience in epochs (default 15)")
     p.add_argument("--lr-patience", type=int,   default=5,
@@ -255,6 +257,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-heads",   type=int,   default=4)
     p.add_argument("--k-lap",       type=int,   default=16)
     p.add_argument("--dropout",     type=float, default=0.5)
+    p.add_argument("--readout-dropout", type=float, default=0.5,
+                   help="Dropout applied to subject readout before classification")
+    p.add_argument("--label-smoothing", type=float, default=0.05,
+                   help="Cross-entropy label smoothing")
     p.add_argument("--readout-pool",
                    choices=["flatten", "mean", "mean_std", "max", "attention"],
                    default="flatten",
@@ -329,6 +335,7 @@ def make_config(
             dropout=args.dropout,
             dropout_attn=args.dropout,
             dropout_ffn=args.dropout,
+            readout_dropout=args.readout_dropout,
             use_lpe=False,
             k_lap=args.k_lap,
             use_bold_encoder=use_bold_encoder,
@@ -336,7 +343,7 @@ def make_config(
             readout_pool=args.readout_pool,
             use_virtual_node=getattr(args, "use_virtual_node", False),
         ),
-        loss=LossConfig(),
+        loss=LossConfig(label_smoothing=args.label_smoothing),
         precompute=PrecomputeConfig(
             morphospace_pair=(args.morphospace_x, args.morphospace_y),
             topo_metric_x_attr=MEASURE_CODE_TO_ATTR[args.morphospace_x],
@@ -826,9 +833,10 @@ def train_fold(
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
+    selection_metric = getattr(args, "selection_metric", "loss")
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        mode="max",           # higher val AUC is better
+        mode="min" if selection_metric == "loss" else "max",
         factor=args.lr_factor,
         patience=args.lr_patience,
         min_lr=args.min_lr,
@@ -866,23 +874,36 @@ def train_fold(
 
         _print_epoch(fold_idx, epoch, args.epochs, train_m, val_m, current_lr)
 
-        # Track best by val AUC (tiebreak: lower val loss)
+        # Track best checkpoint by the configured validation metric.
         val_auc  = val_m.get("auc", float("nan"))
         val_loss = val_m.get("loss", float("inf"))
         improved = False
-        if val_auc == val_auc:  # not nan
-            if val_auc > best_val_auc or (val_auc == best_val_auc and val_loss < best_val_loss):
+        if selection_metric == "loss":
+            metric_valid = val_loss == val_loss
+            metric_value = val_loss
+            improved = metric_valid and (
+                val_loss < best_val_loss
+                or (val_loss == best_val_loss and val_auc > best_val_auc)
+            )
+        else:
+            metric_valid = val_auc == val_auc
+            metric_value = val_auc
+            improved = metric_valid and (
+                val_auc > best_val_auc
+                or (val_auc == best_val_auc and val_loss < best_val_loss)
+            )
+
+        if metric_valid:
+            if improved:
                 best_val_auc     = val_auc
                 best_val_loss    = val_loss
                 best_val_metrics = val_m
                 best_epoch       = epoch
-                improved         = True
                 epochs_no_improve = 0
             else:
                 epochs_no_improve += 1
 
-            # Step scheduler on valid (non-nan) AUC
-            scheduler.step(val_auc)
+            scheduler.step(metric_value)
 
         if improved:
             torch.save(
@@ -920,7 +941,8 @@ def train_fold(
         # Early stopping
         if epochs_no_improve >= args.patience:
             print(f"  Early stopping at epoch {epoch} "
-                  f"(no val AUC improvement for {args.patience} epochs)")
+                  f"(no val {selection_metric} improvement for "
+                  f"{args.patience} epochs)")
             stopped_early = True
             break
 
