@@ -37,3 +37,9 @@ For FC-only datasets such as `ad_lmci` or `nc_asd`, use the linear BOLD projecti
 ```bash
 python scripts/train_kfold.py --config configs/train.yaml --dataset ad_lmci --no-bold-encoder
 ```
+
+Equivalent config-style overrides are also supported:
+
+```bash
+python scripts/train_kfold.py --config configs/train.yaml --set model.no_bold_encoder=true
+```

@@ -109,6 +109,41 @@ def _flatten_yaml_config(config: dict, parser: argparse.ArgumentParser) -> dict:
     return flat
 
 
+def _coerce_option_value(
+    key: str,
+    value,
+    action: argparse.Action,
+    parser: argparse.ArgumentParser,
+):
+    if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+        if isinstance(value, bool):
+            coerced = value
+        elif isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                coerced = True
+            elif lowered in {"0", "false", "no", "off"}:
+                coerced = False
+            else:
+                parser.error(f"option '{key}' must be true or false")
+        else:
+            parser.error(f"option '{key}' must be true or false")
+    elif action.type is not None:
+        try:
+            coerced = action.type(value)
+        except (TypeError, ValueError) as exc:
+            parser.error(f"invalid value for '{key}': {exc}")
+    else:
+        coerced = value
+
+    if action.choices is not None and coerced not in action.choices:
+        parser.error(
+            f"invalid value for '{key}': {coerced!r}; "
+            f"choose from {list(action.choices)}"
+        )
+    return coerced
+
+
 def _load_yaml_defaults(path: str, parser: argparse.ArgumentParser) -> dict:
     try:
         import yaml
@@ -138,20 +173,26 @@ def _load_yaml_defaults(path: str, parser: argparse.ArgumentParser) -> dict:
 
     for key, value in defaults.items():
         action = actions[key]
-        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
-            if not isinstance(value, bool):
-                parser.error(f"YAML option '{key}' must be true or false")
-        elif action.type is not None:
-            try:
-                defaults[key] = action.type(value)
-            except (TypeError, ValueError) as exc:
-                parser.error(f"invalid YAML value for '{key}': {exc}")
-        if action.choices is not None and defaults[key] not in action.choices:
-            parser.error(
-                f"invalid YAML value for '{key}': {defaults[key]!r}; "
-                f"choose from {list(action.choices)}"
-            )
+        defaults[key] = _coerce_option_value(key, value, action, parser)
     return defaults
+
+
+def _apply_set_overrides(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    actions = {action.dest: action for action in parser._actions}
+    for raw in args.set_overrides:
+        if "=" not in raw:
+            parser.error(f"--set override must be KEY=VALUE, got {raw!r}")
+        raw_key, raw_value = raw.split("=", 1)
+        key = raw_key.strip().replace("-", "_").split(".")[-1]
+        if not key:
+            parser.error(f"--set override has an empty key: {raw!r}")
+        if key not in actions or key in {"help", "set_overrides"}:
+            parser.error(f"unknown --set option '{raw_key}'")
+        setattr(
+            args,
+            key,
+            _coerce_option_value(raw_key, raw_value.strip(), actions[key], parser),
+        )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -162,6 +203,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config",
         default=None,
         help="YAML config file; explicit CLI options override YAML values",
+    )
+    p.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override any config/CLI option, e.g. --set model.no_bold_encoder=true",
     )
     # Dataset
     p.add_argument("--dataset", choices=["hcp", "abide", "ad_lmci", "nc_asd"],
@@ -231,7 +280,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = _build_parser()
     if config_args.config:
         parser.set_defaults(**_load_yaml_defaults(config_args.config, parser))
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    _apply_set_overrides(args, parser)
+    return args
 
 
 # ── Reproducibility ────────────────────────────────────────────────────────────
