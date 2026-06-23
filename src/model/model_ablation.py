@@ -129,7 +129,9 @@ class BGTESREModelAblation(nn.Module):
                 )
             self.bold_encoder = None
             self.bold_proj = nn.Linear(
-                model_cfg.bold_in_t, model_cfg.hidden_dim
+                model_cfg.bold_in_t,
+                model_cfg.hidden_dim,
+                bias=False,
             )
 
         self._use_lpe = model_cfg.use_lpe
@@ -160,10 +162,12 @@ class BGTESREModelAblation(nn.Module):
             model_cfg.hidden_dim,
             mode=model_cfg.readout_pool,
         )
+        self.graph_readout_norm = nn.LayerNorm(self.graph_readout.output_dim)
 
         # ── Readout (no virtual node concatenation) ───────────────────────
         self.readout = nn.Linear(
-            model_cfg.hidden_dim, model_cfg.num_classes
+            self.graph_readout.output_dim,
+            model_cfg.num_classes,
         )
 
         # ── Loss ──────────────────────────────────────────────────────────
@@ -171,6 +175,9 @@ class BGTESREModelAblation(nn.Module):
         self.loss_fn = BGTCCRELoss(cfg)
 
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _subject_readout(self, h: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        return self.graph_readout_norm(self.graph_readout(h, batch))
 
     def forward(
         self,
@@ -221,7 +228,7 @@ class BGTESREModelAblation(nn.Module):
 
         stage_embeddings = {}
         if return_stage_embeddings:
-            stage_embeddings["encoder"] = self.graph_readout(h, batch)
+            stage_embeddings["encoder"] = self._subject_readout(h, batch)
 
         # ── 2. Morphospace injection ──────────────────────────────────────
         phi_node = scatter_mean(
@@ -229,17 +236,21 @@ class BGTESREModelAblation(nn.Module):
         )                                                # (N, 2)
         h = h + self.phi_proj(phi_node)                  # (N, d)
         if return_stage_embeddings:
-            stage_embeddings["morphospace_injected"] = self.graph_readout(h, batch)
+            stage_embeddings["morphospace_injected"] = self._subject_readout(
+                h, batch
+            )
 
         # ── 3. Transformer layers (no virtual node update) ────────────────
         for layer_idx, layer in enumerate(self.layers, start=1):
             h = layer(h, data.edge_index, data.phi)      # (N, d)
             if return_stage_embeddings:
-                stage_embeddings[f"layer_{layer_idx}"] = self.graph_readout(h, batch)
+                stage_embeddings[f"layer_{layer_idx}"] = self._subject_readout(
+                    h, batch
+                )
 
         # ── 4. Final norm + readout (mean pooling only) ───────────────────
         h       = self.final_norm(h)                     # (N, d)
-        h_graph = self.graph_readout(h, batch)           # (G, d)
+        h_graph = self._subject_readout(h, batch)
         if return_stage_embeddings:
             stage_embeddings["final"] = h_graph
             stage_embeddings["readout_input"] = h_graph

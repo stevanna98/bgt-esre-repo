@@ -14,16 +14,25 @@ class GraphReadout(nn.Module):
 
     def __init__(self, hidden_dim: int, mode: str = "mean") -> None:
         super().__init__()
-        if mode not in {"mean", "max", "attention"}:
+        if mode not in {"mean", "max", "attention", "mean_std"}:
             raise ValueError(
-                f"readout_pool must be one of mean, max, attention; got {mode!r}"
+                "readout_pool must be one of mean, max, attention, mean_std; "
+                f"got {mode!r}"
             )
+        self.hidden_dim = hidden_dim
         self.mode = mode
+        self.output_dim = 2 * hidden_dim if mode == "mean_std" else hidden_dim
         self.score = nn.Linear(hidden_dim, 1) if mode == "attention" else None
 
     def forward(self, h: Tensor, batch: Tensor) -> Tensor:
         if self.mode == "mean":
             return scatter_mean(h, batch, dim=0)
+        if self.mode == "mean_std":
+            mean = scatter_mean(h, batch, dim=0)
+            centered = h - mean[batch]
+            var = scatter_mean(centered.square(), batch, dim=0)
+            std = torch.sqrt(var.clamp_min(1e-12))
+            return torch.cat([mean, std], dim=-1)
         if self.mode == "max":
             return scatter_max(h, batch, dim=0)
 

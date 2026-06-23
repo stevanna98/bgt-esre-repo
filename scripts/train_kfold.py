@@ -226,7 +226,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size",  type=int,   default=64)
     p.add_argument("--lr",          type=float, default=1e-4)
     p.add_argument("--weight-decay",type=float, default=5e-2)
-    p.add_argument("--scaler",      choices=["standard", "minmax", "none"], default="minmax")
+    p.add_argument("--scaler",      choices=["standard", "minmax", "none"], default="standard")
     p.add_argument("--patience",    type=int,   default=15,
                    help="Early-stopping patience in epochs (default 15)")
     p.add_argument("--lr-patience", type=int,   default=5,
@@ -254,8 +254,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-heads",   type=int,   default=4)
     p.add_argument("--k-lap",       type=int,   default=16)
     p.add_argument("--dropout",     type=float, default=0.5)
-    p.add_argument("--readout-pool", choices=["mean", "max", "attention"],
-                   default="mean",
+    p.add_argument("--readout-pool", choices=["mean", "mean_std", "max", "attention"],
+                   default="mean_std",
                    help="Graph-level subject pooling for the classifier")
     # Precompute / graph
     p.add_argument("--morphospace-x", default="comm",
@@ -603,6 +603,8 @@ def _effective_rank(emb: np.ndarray) -> float:
 
 def _embedding_dispersion_stats(emb: np.ndarray) -> dict:
     centered = emb - emb.mean(axis=0, keepdims=True)
+    common_norm = float(np.linalg.norm(emb.mean(axis=0)))
+    residual_norm = float(np.mean(np.linalg.norm(centered, axis=1)))
     if emb.shape[0] <= 1:
         mean_pairwise_l2 = float("nan")
     else:
@@ -614,6 +616,11 @@ def _embedding_dispersion_stats(emb: np.ndarray) -> dict:
         mean_feature_std=float(np.mean(np.std(emb, axis=0))),
         centered_fro_norm=float(np.linalg.norm(centered)),
         mean_pairwise_l2=mean_pairwise_l2,
+        common_norm=common_norm,
+        mean_residual_norm=residual_norm,
+        common_to_residual_norm=(
+            common_norm / residual_norm if residual_norm > 1e-12 else float("inf")
+        ),
         effective_rank=_effective_rank(emb),
     )
 

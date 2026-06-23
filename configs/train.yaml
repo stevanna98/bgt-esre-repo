@@ -43,7 +43,7 @@ training:
 
   # BOLD scaling fitted only on each training fold:
   # standard | minmax | none
-  scaler: minmax
+  scaler: standard
 
   # Stop after this many epochs without validation-AUC improvement.
   patience: 15
@@ -75,8 +75,8 @@ model:
   dropout: 0.5
 
   # Subject-level readout over node embeddings:
-  # mean | max | attention
-  readout_pool: mean
+  # mean_std | mean | max | attention
+  readout_pool: mean_std
 
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
   # true: linear projection; normally use this for FC-only ad_lmci/nc_asd.

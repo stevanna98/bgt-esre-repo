@@ -54,7 +54,11 @@ class BGTESREModel(nn.Module):
                     "ModelConfig.bold_in_t must be set when use_bold_encoder=False"
                 )
             self.bold_encoder = None
-            self.bold_proj = nn.Linear(model_cfg.bold_in_t, model_cfg.hidden_dim)
+            self.bold_proj = nn.Linear(
+                model_cfg.bold_in_t,
+                model_cfg.hidden_dim,
+                bias=False,
+            )
         self._use_lpe = model_cfg.use_lpe
         self.lap_proj = nn.Linear(model_cfg.k_lap, model_cfg.hidden_dim, bias=False) if model_cfg.use_lpe else None
         self.dropout = nn.Dropout(model_cfg.dropout)
@@ -81,11 +85,15 @@ class BGTESREModel(nn.Module):
             model_cfg.hidden_dim,
             mode=model_cfg.readout_pool,
         )
+        self.graph_readout_norm = nn.LayerNorm(self.graph_readout.output_dim)
 
         # ── Readout ───────────────────────────────────────────────────────
         # Concatenates graph-pooled node embeddings with the virtual node
         # embedding so the classifier sees both local and global graph context.
-        self.readout = nn.Linear(2 * model_cfg.hidden_dim, model_cfg.num_classes)
+        self.readout = nn.Linear(
+            self.graph_readout.output_dim + model_cfg.hidden_dim,
+            model_cfg.num_classes,
+        )
 
         # ── Loss ──────────────────────────────────────────────────────────
         # Imported here to avoid a circular dependency at module level.
@@ -93,6 +101,9 @@ class BGTESREModel(nn.Module):
         self.loss_fn = BGTCCRELoss(cfg)
 
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _subject_readout(self, h: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        return self.graph_readout_norm(self.graph_readout(h, batch))
 
     def forward(
         self,
@@ -162,7 +173,7 @@ class BGTESREModel(nn.Module):
 
         stage_embeddings = {}
         if return_stage_embeddings:
-            stage_embeddings["encoder"] = self.graph_readout(h, batch)
+            stage_embeddings["encoder"] = self._subject_readout(h, batch)
 
         vn_h = self.vn_emb.weight.expand(B, -1)              # (B, hidden_dim)
 
@@ -177,11 +188,13 @@ class BGTESREModel(nn.Module):
             vn_h   = F.layer_norm(vn_h + vn_agg, [d])       # (G, d)
             h      = h + vn_h[batch]                         # (N, d)
             if return_stage_embeddings:
-                stage_embeddings[f"layer_{layer_idx}"] = self.graph_readout(h, batch)
+                stage_embeddings[f"layer_{layer_idx}"] = self._subject_readout(
+                    h, batch
+                )
 
         # ──3. Final normalisation ─────────────────────────────────────────
         h = self.final_norm(h)
-        h_graph = self.graph_readout(h, batch)                         # (G, d)
+        h_graph = self._subject_readout(h, batch)
         readout_input = torch.cat([h_graph, vn_h], dim=-1)
         if return_stage_embeddings:
             stage_embeddings["final"] = h_graph
