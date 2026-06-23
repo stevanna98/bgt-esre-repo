@@ -12,7 +12,7 @@ No seaborn dependency.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Mapping, Sequence
 
 import matplotlib
 matplotlib.use("Agg")
@@ -122,6 +122,66 @@ def plot_cosine_similarity_heatmap(
     ax.set_ylabel("Subject")
     fig.tight_layout()
     fig.savefig(out_path, dpi=100)
+    plt.close(fig)
+
+
+def plot_stage_cosine_architecture_grid(
+    raw_by_stage: Mapping[str, np.ndarray],
+    centered_by_stage: Mapping[str, np.ndarray],
+    stage_order: Sequence[str],
+    out_path: str | Path,
+    title: str,
+) -> None:
+    """Grid of subject cosine-similarity heatmaps across model stages."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    stages = [
+        stage
+        for stage in stage_order
+        if stage in raw_by_stage and stage in centered_by_stage
+    ]
+    if not stages:
+        return
+
+    n_rows = len(stages)
+    fig_height = max(3.0, 2.7 * n_rows)
+    fig, axes = plt.subplots(
+        n_rows,
+        2,
+        figsize=(10, fig_height),
+        squeeze=False,
+        constrained_layout=True,
+    )
+
+    im = None
+    for row, stage in enumerate(stages):
+        matrices = (raw_by_stage[stage], centered_by_stage[stage])
+        for col, matrix in enumerate(matrices):
+            ax = axes[row][col]
+            im = ax.imshow(
+                matrix,
+                cmap="coolwarm",
+                vmin=-1.0,
+                vmax=1.0,
+                aspect="auto",
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            if row == 0:
+                ax.set_title("Raw cosine" if col == 0 else "Centered cosine")
+            if col == 0:
+                ax.set_ylabel(
+                    stage.replace("_", " "),
+                    rotation=0,
+                    ha="right",
+                    va="center",
+                )
+
+    fig.suptitle(title)
+    if im is not None:
+        fig.colorbar(im, ax=axes, fraction=0.025, pad=0.02)
+    fig.savefig(out_path, dpi=120)
     plt.close(fig)
 
 

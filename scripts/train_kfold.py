@@ -65,6 +65,7 @@ from src.utils.metrics import compute_metrics
 from src.utils.plotting import (
     plot_cosine_similarity_heatmap,
     plot_embedding_collapse_trends,
+    plot_stage_cosine_architecture_grid,
     plot_attention_heatmap,
     plot_attention_per_label,
     plot_metric_train_val,
@@ -687,12 +688,16 @@ def save_embedding_similarity_monitor(
     epoch_data_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_path = embed_dir / "collapse_metrics.jsonl"
+    raw_sims: dict[str, np.ndarray] = {}
+    centered_sims: dict[str, np.ndarray] = {}
     with metrics_path.open("a", encoding="utf-8") as f:
         for stage, emb in stage_embeddings.items():
             sim = _cosine_similarity_matrix(emb)
             centered_sim = _cosine_similarity_matrix(
                 emb - emb.mean(axis=0, keepdims=True)
             )
+            raw_sims[stage] = sim
+            centered_sims[stage] = centered_sim
             stats = _embedding_similarity_stats(sim)
             centered_stats = _embedding_similarity_stats(centered_sim)
             dispersion_stats = _embedding_dispersion_stats(emb)
@@ -727,6 +732,14 @@ def save_embedding_similarity_monitor(
                 **dispersion_stats,
             )
             f.write(json.dumps(record) + "\n")
+
+    plot_stage_cosine_architecture_grid(
+        raw_sims,
+        centered_sims,
+        stage_order=list(stage_embeddings.keys()),
+        out_path=epoch_plot_dir / "architecture_cosine_grid.png",
+        title=f"{split} subject cosine similarities through architecture - epoch {epoch}",
+    )
 
     plot_embedding_collapse_trends(
         trend_history,
