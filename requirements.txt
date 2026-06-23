@@ -1,0 +1,13 @@
+matplotlib
+networkx
+numpy
+psutil
+pyyaml
+scikit-learn
+scipy
+torch
+torch-geometric
+tqdm
+
+# Optional: faster/community-detection backend used by src/precompute/participation.py.
+python-louvain

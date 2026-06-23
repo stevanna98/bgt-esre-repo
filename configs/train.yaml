@@ -1,0 +1,100 @@
+# General BGT-ESRE K-fold training configuration.
+#
+# Every leaf key corresponds to a train_kfold.py CLI option. Underscores and
+# hyphens are interchangeable. Section names are only for organization.
+# Explicit CLI options override this file.
+
+data:
+  # Supported loaders: hcp, abide, ad_lmci, nc_asd.
+  dataset: hcp
+
+  # Always set this explicitly. Expected files depend on `dataset`:
+  #
+  # hcp:
+  #   bold.npy          (subjects, regions, time)
+  #   connectivity.npy  (subjects, regions, regions)
+  #   labels.npy        (subjects,)
+  #   coords.npy        (regions, 3)
+  #
+  # abide:
+  #   bold.npy          (subjects, time, regions)
+  #   connectivity.npy  (subjects, regions, regions)
+  #   labels.npy        (subjects,)
+  #   coords.npy        (regions, 3)
+  #
+  # ad_lmci or nc_asd:
+  #   data_<dataset>.npy    (subjects, regions, regions, features)
+  #   labels_<dataset>.npy  (subjects,)
+  #   desikan_coords_left.npy (regions, 3)
+  data_dir: null
+
+cross_validation:
+  # Each class must contain at least this many subjects.
+  k: 5
+
+training:
+  epochs: 200
+
+  # Start conservatively and increase after measuring GPU memory.
+  batch_size: 8
+
+  lr: 0.0001
+  weight_decay: 0.05
+
+  # BOLD scaling fitted only on each training fold:
+  # standard | minmax | none
+  scaler: minmax
+
+  # Stop after this many epochs without validation-AUC improvement.
+  patience: 15
+
+  # ReduceLROnPlateau settings, also driven by validation AUC.
+  lr_patience: 5
+  lr_factor: 0.5
+  min_lr: 0.000001
+
+  # Re-render metric and attention plots every N epochs.
+  plot_every: 5
+
+model:
+  # full | ablation_no_rotary
+  model: full
+
+  hidden_dim: 64
+  num_layers: 2
+  # hidden_dim / num_heads must be an even integer for the full ESRE model.
+  num_heads: 4
+
+  # Currently precomputed but not used because normal training disables LapPE.
+  k_lap: 16
+  dropout: 0.5
+
+  # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
+  # true: linear projection; normally use this for FC-only ad_lmci/nc_asd.
+  no_bold_encoder: false
+
+graph:
+  # Available edge measures: ediff, erout, ebc, ecc, comm, ep.
+  # These two measures become the two log-morphospace coordinates.
+  morphospace_x: comm
+  morphospace_y: ebc
+
+  # binary | fc | cost_penalised
+  weight_mode: cost_penalised
+
+  # Fraction of positive FC edges retained, in (0, 1].
+  # 1.0 means 100%; 0.2 means the strongest 20%.
+  threshold_pct: 1.0
+
+runtime:
+  seed: 42
+
+  # auto | cpu | cuda | cuda:0, etc.
+  device: auto
+
+  # null creates runs/<dataset>_<model>_<timestamp> automatically.
+  out_dir: null
+
+  # Set true only for the built-in synthetic smoke test. Dataset settings are
+  # ignored in smoke mode.
+  smoke: false
