@@ -55,7 +55,7 @@ runs/<run>/fold_<k>/embeddings/epoch_001/
 runs/<run>/fold_<k>/embeddings/collapse_metrics.jsonl
 ```
 
-The stages include `encoder`, each transformer `layer_<n>`, `final`, `virtual_node`, and `readout_input`.
+The stages include `encoder`, each transformer `layer_<n>`, `final`, and `readout_input`. If `use_virtual_node` is enabled, the monitor also includes `virtual_node`.
 
 Control this in `configs/train.yaml`:
 
@@ -77,4 +77,5 @@ or in YAML:
 ```yaml
 model:
   readout_pool: flatten   # flatten | mean_std | mean | max | attention
+  use_virtual_node: false
 ```

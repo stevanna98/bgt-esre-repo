@@ -259,6 +259,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=["flatten", "mean", "mean_std", "max", "attention"],
                    default="flatten",
                    help="Graph-level subject pooling for the classifier")
+    p.add_argument("--use-virtual-node", action="store_true",
+                   help="Enable the optional graph-level virtual-node side channel")
     # Precompute / graph
     p.add_argument("--morphospace-x", default="comm",
                    choices=list(MEASURE_CODE_TO_ATTR),
@@ -332,6 +334,7 @@ def make_config(
             use_bold_encoder=use_bold_encoder,
             bold_in_t=bold_in_t if not use_bold_encoder else None,
             readout_pool=args.readout_pool,
+            use_virtual_node=getattr(args, "use_virtual_node", False),
         ),
         loss=LossConfig(),
         precompute=PrecomputeConfig(
