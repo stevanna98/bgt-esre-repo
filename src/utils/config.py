@@ -37,6 +37,7 @@ class ModelConfig:
     k_lap: int = 16
     use_bold_encoder: bool = False   # False → linear projection instead of CNN
     bold_in_t: Optional[int] = 35  # required when use_bold_encoder=False
+    readout_pool: str = "mean"  # "mean" | "max" | "attention"
 
 
 @dataclass

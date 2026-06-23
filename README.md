@@ -63,3 +63,18 @@ Control this in `configs/train.yaml`:
 embedding_monitor: val        # none | train | val | all
 embedding_monitor_every: 1
 ```
+
+## Subject Readout Pooling
+
+The default subject embedding uses mean pooling across brain-region node embeddings. You can replace it with max pooling or learned attention pooling:
+
+```bash
+python scripts/train_kfold.py --config configs/train.yaml --readout-pool attention
+```
+
+or in YAML:
+
+```yaml
+model:
+  readout_pool: attention   # mean | max | attention
+```

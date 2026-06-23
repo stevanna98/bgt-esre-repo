@@ -254,6 +254,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-heads",   type=int,   default=4)
     p.add_argument("--k-lap",       type=int,   default=16)
     p.add_argument("--dropout",     type=float, default=0.5)
+    p.add_argument("--readout-pool", choices=["mean", "max", "attention"],
+                   default="mean",
+                   help="Graph-level subject pooling for the classifier")
     # Precompute / graph
     p.add_argument("--morphospace-x", default="comm",
                    choices=list(MEASURE_CODE_TO_ATTR),
@@ -326,6 +329,7 @@ def make_config(
             k_lap=args.k_lap,
             use_bold_encoder=use_bold_encoder,
             bold_in_t=bold_in_t if not use_bold_encoder else None,
+            readout_pool=args.readout_pool,
         ),
         loss=LossConfig(),
         precompute=PrecomputeConfig(
@@ -582,6 +586,38 @@ def _cosine_similarity_matrix(emb: np.ndarray) -> np.ndarray:
     return np.clip(sim, -1.0, 1.0).astype(np.float32)
 
 
+def _effective_rank(emb: np.ndarray) -> float:
+    """Entropy-based rank of centered subject embeddings."""
+    centered = emb - emb.mean(axis=0, keepdims=True)
+    try:
+        singular_vals = np.linalg.svd(centered, compute_uv=False)
+    except np.linalg.LinAlgError:
+        return float("nan")
+    total = float(singular_vals.sum())
+    if total <= 1e-12:
+        return 0.0
+    probs = singular_vals / total
+    entropy = -float(np.sum(probs * np.log(probs + 1e-12)))
+    return float(np.exp(entropy))
+
+
+def _embedding_dispersion_stats(emb: np.ndarray) -> dict:
+    centered = emb - emb.mean(axis=0, keepdims=True)
+    if emb.shape[0] <= 1:
+        mean_pairwise_l2 = float("nan")
+    else:
+        diffs = emb[:, None, :] - emb[None, :, :]
+        dists = np.linalg.norm(diffs, axis=-1)
+        mask = ~np.eye(emb.shape[0], dtype=bool)
+        mean_pairwise_l2 = float(np.mean(dists[mask]))
+    return dict(
+        mean_feature_std=float(np.mean(np.std(emb, axis=0))),
+        centered_fro_norm=float(np.linalg.norm(centered)),
+        mean_pairwise_l2=mean_pairwise_l2,
+        effective_rank=_effective_rank(emb),
+    )
+
+
 def _embedding_similarity_stats(sim: np.ndarray) -> dict:
     n = sim.shape[0]
     if n <= 1:
@@ -647,17 +683,42 @@ def save_embedding_similarity_monitor(
     with metrics_path.open("a", encoding="utf-8") as f:
         for stage, emb in stage_embeddings.items():
             sim = _cosine_similarity_matrix(emb)
+            centered_sim = _cosine_similarity_matrix(
+                emb - emb.mean(axis=0, keepdims=True)
+            )
             stats = _embedding_similarity_stats(sim)
+            centered_stats = _embedding_similarity_stats(centered_sim)
+            dispersion_stats = _embedding_dispersion_stats(emb)
             np.save(epoch_data_dir / f"{stage}_embeddings.npy", emb)
             np.save(epoch_data_dir / f"{stage}_cosine.npy", sim)
+            np.save(epoch_data_dir / f"{stage}_centered_cosine.npy", centered_sim)
             plot_cosine_similarity_heatmap(
                 sim,
                 epoch_plot_dir / f"{stage}.png",
                 title=f"{split} cosine similarity - {stage} - epoch {epoch}",
             )
+            plot_cosine_similarity_heatmap(
+                centered_sim,
+                epoch_plot_dir / f"{stage}_centered.png",
+                title=f"{split} centered cosine - {stage} - epoch {epoch}",
+            )
 
-            trend_history[stage].append(stats["mean_offdiag"])
-            record = dict(epoch=epoch, split=split, stage=stage, **stats)
+            trend_history[f"{stage}/raw"].append(stats["mean_offdiag"])
+            trend_history[f"{stage}/centered"].append(
+                centered_stats["mean_offdiag"]
+            )
+            record = dict(
+                epoch=epoch,
+                split=split,
+                stage=stage,
+                **stats,
+                centered_mean_offdiag=centered_stats["mean_offdiag"],
+                centered_median_offdiag=centered_stats["median_offdiag"],
+                centered_max_offdiag=centered_stats["max_offdiag"],
+                centered_min_offdiag=centered_stats["min_offdiag"],
+                centered_std_offdiag=centered_stats["std_offdiag"],
+                **dispersion_stats,
+            )
             f.write(json.dumps(record) + "\n")
 
     plot_embedding_collapse_trends(

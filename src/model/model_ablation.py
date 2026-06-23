@@ -32,6 +32,7 @@ from src.utils.scatter import scatter_mean
 from src.utils.config import BGTESREConfig
 from src.model.bold_encoder import ParallelRegionEncoder
 from src.model.esre_no_rotary import ESREAttentionNoRotary
+from src.model.readout import GraphReadout
 
 
 # ── Ablation layer ────────────────────────────────────────────────────────────
@@ -155,8 +156,12 @@ class BGTESREModelAblation(nn.Module):
         ])
 
         self.final_norm = nn.LayerNorm(model_cfg.hidden_dim)
+        self.graph_readout = GraphReadout(
+            model_cfg.hidden_dim,
+            mode=model_cfg.readout_pool,
+        )
 
-        # ── Readout (mean pooling only, no virtual node concatenation) ────
+        # ── Readout (no virtual node concatenation) ───────────────────────
         self.readout = nn.Linear(
             model_cfg.hidden_dim, model_cfg.num_classes
         )
@@ -216,7 +221,7 @@ class BGTESREModelAblation(nn.Module):
 
         stage_embeddings = {}
         if return_stage_embeddings:
-            stage_embeddings["encoder"] = scatter_mean(h, batch, dim=0)
+            stage_embeddings["encoder"] = self.graph_readout(h, batch)
 
         # ── 2. Morphospace injection ──────────────────────────────────────
         phi_node = scatter_mean(
@@ -224,17 +229,17 @@ class BGTESREModelAblation(nn.Module):
         )                                                # (N, 2)
         h = h + self.phi_proj(phi_node)                  # (N, d)
         if return_stage_embeddings:
-            stage_embeddings["morphospace_injected"] = scatter_mean(h, batch, dim=0)
+            stage_embeddings["morphospace_injected"] = self.graph_readout(h, batch)
 
         # ── 3. Transformer layers (no virtual node update) ────────────────
         for layer_idx, layer in enumerate(self.layers, start=1):
             h = layer(h, data.edge_index, data.phi)      # (N, d)
             if return_stage_embeddings:
-                stage_embeddings[f"layer_{layer_idx}"] = scatter_mean(h, batch, dim=0)
+                stage_embeddings[f"layer_{layer_idx}"] = self.graph_readout(h, batch)
 
         # ── 4. Final norm + readout (mean pooling only) ───────────────────
         h       = self.final_norm(h)                     # (N, d)
-        h_graph = scatter_mean(h, batch, dim=0)          # (G, d)
+        h_graph = self.graph_readout(h, batch)           # (G, d)
         if return_stage_embeddings:
             stage_embeddings["final"] = h_graph
             stage_embeddings["readout_input"] = h_graph

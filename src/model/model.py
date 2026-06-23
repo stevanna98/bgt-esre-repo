@@ -11,6 +11,7 @@ from src.utils.scatter import scatter_mean
 from src.utils.config import BGTESREConfig
 from src.model.bold_encoder import ParallelRegionEncoder
 from src.model.layer import BGTESRELayer
+from src.model.readout import GraphReadout
 
 
 class BGTESREModel(nn.Module):
@@ -76,9 +77,13 @@ class BGTESREModel(nn.Module):
         )
 
         self.final_norm = nn.LayerNorm(model_cfg.hidden_dim)
+        self.graph_readout = GraphReadout(
+            model_cfg.hidden_dim,
+            mode=model_cfg.readout_pool,
+        )
 
         # ── Readout ───────────────────────────────────────────────────────
-        # Concatenates mean-pooled node embeddings with the virtual node
+        # Concatenates graph-pooled node embeddings with the virtual node
         # embedding so the classifier sees both local and global graph context.
         self.readout = nn.Linear(2 * model_cfg.hidden_dim, model_cfg.num_classes)
 
@@ -157,7 +162,7 @@ class BGTESREModel(nn.Module):
 
         stage_embeddings = {}
         if return_stage_embeddings:
-            stage_embeddings["encoder"] = scatter_mean(h, batch, dim=0)
+            stage_embeddings["encoder"] = self.graph_readout(h, batch)
 
         vn_h = self.vn_emb.weight.expand(B, -1)              # (B, hidden_dim)
 
@@ -172,11 +177,11 @@ class BGTESREModel(nn.Module):
             vn_h   = F.layer_norm(vn_h + vn_agg, [d])       # (G, d)
             h      = h + vn_h[batch]                         # (N, d)
             if return_stage_embeddings:
-                stage_embeddings[f"layer_{layer_idx}"] = scatter_mean(h, batch, dim=0)
+                stage_embeddings[f"layer_{layer_idx}"] = self.graph_readout(h, batch)
 
         # ──3. Final normalisation ─────────────────────────────────────────
         h = self.final_norm(h)
-        h_graph = scatter_mean(h, batch, dim=0)                        # (G, d)
+        h_graph = self.graph_readout(h, batch)                         # (G, d)
         readout_input = torch.cat([h_graph, vn_h], dim=-1)
         if return_stage_embeddings:
             stage_embeddings["final"] = h_graph

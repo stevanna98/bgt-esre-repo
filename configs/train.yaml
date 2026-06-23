@@ -74,6 +74,10 @@ model:
   k_lap: 16
   dropout: 0.5
 
+  # Subject-level readout over node embeddings:
+  # mean | max | attention
+  readout_pool: mean
+
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
   # true: linear projection; normally use this for FC-only ad_lmci/nc_asd.
   no_bold_encoder: true

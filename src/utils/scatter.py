@@ -68,6 +68,32 @@ def scatter_mean(
     return out / count
 
 
+def scatter_max(
+    src: Tensor,
+    index: Tensor,
+    dim: int = 0,
+    dim_size: int | None = None,
+) -> Tensor:
+    """Compute max of ``src`` values that share the same ``index`` entry."""
+    if dim != 0:
+        raise NotImplementedError("scatter_max currently supports dim=0 only")
+    if dim_size is None:
+        dim_size = int(index.max().item()) + 1
+
+    idx = index
+    for _ in range(src.dim() - 1):
+        idx = idx.unsqueeze(-1)
+    idx = idx.expand_as(src)
+
+    out_shape = list(src.shape)
+    out_shape[dim] = dim_size
+    out = torch.full(
+        out_shape, -torch.inf, dtype=src.dtype, device=src.device
+    )
+    out.scatter_reduce_(dim, idx, src, reduce="amax", include_self=True)
+    return torch.nan_to_num(out, neginf=0.0)
+
+
 def scatter_softmax_stable(
     src: Tensor,
     index: Tensor,
