@@ -98,7 +98,7 @@ runtime:
   device: auto
 
   # null creates runs/<dataset>_<model>_<timestamp> automatically.
-  out_dir: null
+  out_dir: /content/drive/MyDrive/IMPERIAL/IMPERIAL/data/neurips/abide/outputs/
 
   # Set true only for the built-in synthetic smoke test. Dataset settings are
   # ignored in smoke mode.
