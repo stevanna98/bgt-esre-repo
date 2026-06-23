@@ -332,6 +332,30 @@ def make_config(
 
 # ── Data utilities ─────────────────────────────────────────────────────────────
 
+def infer_normalised_bold_time_dim(subject: SubjectRecord) -> int:
+    """Return BOLD T after applying the same axis handling as subject_to_data."""
+    bold = subject.bold
+    if subject.bold_axes == "TN":
+        bold = bold.T
+
+    if bold.ndim != 2:
+        raise ValueError(
+            f"{subject.subject_id}: expected 2-D BOLD, got shape {bold.shape}"
+        )
+
+    n_regions = subject.fc.shape[0]
+    if bold.shape[0] != n_regions:
+        if bold.shape[1] == n_regions:
+            bold = bold.T
+        else:
+            raise ValueError(
+                f"{subject.subject_id}: BOLD shape {bold.shape} is incompatible "
+                f"with connectivity shape {subject.fc.shape}; one BOLD axis "
+                f"must equal the region count {n_regions}"
+            )
+    return int(bold.shape[1])
+
+
 def build_all_data(
     subjects: list[SubjectRecord],
     coords: np.ndarray,
@@ -973,8 +997,14 @@ def main() -> None:
         json.dump(vars(args), f, indent=2)
     print(f"  Output directory: {out_dir}\n")
 
-    # Config — infer bold_in_t from the first subject when the CNN is disabled
-    bold_in_t = subjects[0].bold.shape[-1] if getattr(args, "no_bold_encoder", False) else None
+    # Config — infer BOLD T after axis normalisation when the CNN is disabled.
+    bold_in_t = (
+        infer_normalised_bold_time_dim(subjects[0])
+        if getattr(args, "no_bold_encoder", False)
+        else None
+    )
+    if bold_in_t is not None:
+        print(f"  Linear BOLD projection input length: {bold_in_t}\n")
     cfg = make_config(args, coords.shape[0], n_classes, bold_in_t=bold_in_t)
 
     # Precompute graphs once (expensive — ~2 min for HCP at N=379)
