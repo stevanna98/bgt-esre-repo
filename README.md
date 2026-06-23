@@ -55,7 +55,7 @@ runs/<run>/fold_<k>/embeddings/epoch_001/
 runs/<run>/fold_<k>/embeddings/collapse_metrics.jsonl
 ```
 
-The stages include `encoder`, each transformer `layer_<n>`, `final`, and `readout_input`.
+The stages include `encoder`, each transformer `layer_<n>`, `final`, `virtual_node`, and `readout_input`.
 
 Control this in `configs/train.yaml`:
 

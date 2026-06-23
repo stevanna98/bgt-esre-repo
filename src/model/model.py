@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch_geometric.data import Data
 from src.utils.scatter import scatter_mean
 
@@ -177,16 +176,18 @@ class BGTESREModel(nn.Module):
 
         vn_h = self.vn_emb.weight.expand(B, -1)              # (B, hidden_dim)
 
-        # ── 2. Transformer layers with virtual node update ─────────────────
+        # ── 2. Transformer layers with virtual node side channel ────────────
         d = h.shape[-1]
         for layer_idx, layer in enumerate(self.layers, start=1):
             h = layer(h, data.edge_index, data.phi)
 
-            # Virtual node: aggregate from real nodes, normalise to prevent
-            # unbounded accumulation, then broadcast back.
+            # Virtual node: aggregate from real nodes as a graph-level side
+            # channel. Do not broadcast it back into every ROI embedding:
+            # doing so injects a large repeated component that dominates
+            # subject-level raw cosine similarity, especially with flatten
+            # readout over a fixed atlas.
             vn_agg = scatter_mean(h, batch, dim=0)           # (G, d)
-            vn_h   = F.layer_norm(vn_h + vn_agg, [d])       # (G, d)
-            h      = h + vn_h[batch]                         # (N, d)
+            vn_h   = torch.nn.functional.layer_norm(vn_h + vn_agg, [d])
             if return_stage_embeddings:
                 stage_embeddings[f"layer_{layer_idx}"] = self._subject_readout(
                     h, batch
@@ -198,6 +199,7 @@ class BGTESREModel(nn.Module):
         readout_input = torch.cat([h_graph, vn_h], dim=-1)
         if return_stage_embeddings:
             stage_embeddings["final"] = h_graph
+            stage_embeddings["virtual_node"] = vn_h
             stage_embeddings["readout_input"] = readout_input
 
         # ── 4. Readout ─────────────────────────────────────────────────
