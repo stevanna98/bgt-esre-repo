@@ -201,6 +201,14 @@ class BGTESREModelAblation(nn.Module):
             h = h + self.lap_proj(data.lap_pe)
         h = self.norm(self.dropout(h))                   # (N, d)
 
+        if h.shape[0] != batch.shape[0]:
+            raise RuntimeError(
+                f"Encoded BOLD produced {h.shape[0]} node embeddings, but the "
+                f"batched graph contains {batch.shape[0]} nodes. Check that "
+                "BOLD, connectivity, and coords use the same region count and "
+                "that the selected dataset loader matches the BOLD axis order."
+            )
+
         # ── 2. Morphospace injection ──────────────────────────────────────
         phi_node = scatter_mean(
             data.phi, data.edge_index[0], dim=0, dim_size=N

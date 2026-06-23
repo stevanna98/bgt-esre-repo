@@ -142,6 +142,14 @@ class BGTESREModel(nn.Module):
         else:
             h = self.norm(self.dropout(h))
 
+        if h.shape[0] != batch.shape[0]:
+            raise RuntimeError(
+                f"Encoded BOLD produced {h.shape[0]} node embeddings, but the "
+                f"batched graph contains {batch.shape[0]} nodes. Check that "
+                "BOLD, connectivity, and coords use the same region count and "
+                "that the selected dataset loader matches the BOLD axis order."
+            )
+
         vn_h = self.vn_emb.weight.expand(B, -1)              # (B, hidden_dim)
 
         # ── 2. Transformer layers with virtual node update ─────────────────

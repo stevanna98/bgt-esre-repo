@@ -109,6 +109,32 @@ def subject_to_data(
     N   = connectivity.shape[0]
     eps = cfg.precompute.eps
 
+    if connectivity.ndim != 2 or connectivity.shape[0] != connectivity.shape[1]:
+        raise ValueError(
+            f"connectivity must be square (N, N), got shape {connectivity.shape}"
+        )
+    if coords.shape[0] != N:
+        raise ValueError(
+            f"coords has {coords.shape[0]} regions but connectivity has {N}; "
+            "use matching atlas coordinates for this dataset"
+        )
+    if bold.ndim != 2:
+        raise ValueError(f"bold must be 2-D after axis handling, got shape {bold.shape}")
+    if bold.shape[0] != N:
+        if bold.shape[1] == N:
+            warnings.warn(
+                f"BOLD shape {bold.shape} does not match graph nodes N={N}; "
+                "transposing BOLD to (regions, time). Check the dataset loader "
+                "or config if this warning appears unexpectedly.",
+                RuntimeWarning,
+            )
+            bold = bold.T
+        else:
+            raise ValueError(
+                f"BOLD shape {bold.shape} is incompatible with connectivity "
+                f"shape {connectivity.shape}; one BOLD axis must equal N={N}"
+            )
+
     # ── 1. Proportional threshold → binary A + weighted Aw ────────────────
     # nan_to_num first: ABIDE has N > T so the pre-computed FC matrix can
     # contain NaN entries (zero-variance regions).  np.clip preserves NaN,
