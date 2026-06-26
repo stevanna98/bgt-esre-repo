@@ -6,7 +6,7 @@
 
 data:
   # Supported loaders: hcp, abide, ad_lmci, nc_asd.
-  dataset: hcp
+  dataset: abide
 
   # Always set this explicitly. Expected files depend on `dataset`:
   #
@@ -26,7 +26,7 @@ data:
   #   data_<dataset>.npy    (subjects, regions, regions, features)
   #   labels_<dataset>.npy  (subjects,)
   #   desikan_coords_left.npy (regions, 3)
-  data_dir: /content/drive/MyDrive/IMPERIAL/data/neurips/hcp/
+  data_dir: /content/drive/MyDrive/IMPERIAL/data/neurips/abide/
 
 cross_validation:
   # Each class must contain at least this many subjects.
@@ -106,7 +106,7 @@ runtime:
   device: auto
 
   # null creates runs/<dataset>_<model>_<timestamp> automatically.
-  out_dir: /content/drive/MyDrive/IMPERIAL/data/neurips/hcp/outputs/
+  out_dir: /content/drive/MyDrive/IMPERIAL/data/neurips/abide/outputs/
 
   # Set true only for the built-in synthetic smoke test. Dataset settings are
   # ignored in smoke mode.
