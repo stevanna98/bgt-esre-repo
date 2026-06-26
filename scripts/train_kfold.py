@@ -266,6 +266,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=["flatten", "mean", "mean_std", "max", "attention"],
                    default="flatten",
                    help="Graph-level subject pooling for the classifier")
+    p.add_argument("--node-features", choices=["bold", "fc"], default="bold",
+                   help="'bold' uses per-region BOLD time series as node "
+                        "features; 'fc' uses each region's FC row as node "
+                        "features")
     p.add_argument("--use-virtual-node", action="store_true",
                    help="Enable the optional graph-level virtual-node side channel")
     # Precompute / graph
@@ -395,25 +399,49 @@ def infer_normalised_bold_time_dim(subject: SubjectRecord) -> int:
     return int(bold.shape[1])
 
 
+def infer_node_feature_dim(subject: SubjectRecord, node_features: str) -> int:
+    """Return feature length consumed by the linear node-feature projection."""
+    if node_features == "bold":
+        return infer_normalised_bold_time_dim(subject)
+    if node_features == "fc":
+        if subject.fc.ndim != 2 or subject.fc.shape[0] != subject.fc.shape[1]:
+            raise ValueError(
+                f"{subject.subject_id}: FC node features require a square "
+                f"connectivity matrix, got {subject.fc.shape}"
+            )
+        return int(subject.fc.shape[1])
+    raise ValueError(f"unknown node_features={node_features!r}")
+
+
 def build_all_data(
     subjects: list[SubjectRecord],
     coords: np.ndarray,
     cfg: BGTESREConfig,
+    node_features: str = "bold",
 ) -> list[Data]:
     """Precompute PyG Data objects for all subjects (expensive, called once).
 
-    The stored data.bold is always (N, T) regardless of bold_axes.
+    The stored data.bold is always (N, T) regardless of bold_axes.  When
+    node_features="fc", data.bold stores FC rows as node features, so T=N.
     Topological measures (phi, E_diff, E_rout, …) are invariant across folds.
     """
     data_list = []
     for subj in tqdm(subjects, desc="Precomputing graphs", unit="subj"):
+        if node_features == "bold":
+            node_input = subj.bold
+            node_input_axes = subj.bold_axes
+        elif node_features == "fc":
+            node_input = subj.fc
+            node_input_axes = "NT"
+        else:
+            raise ValueError(f"unknown node_features={node_features!r}")
         data = subject_to_data(
-            bold=subj.bold,
+            bold=node_input,
             connectivity=subj.fc,
             label=subj.label,
             coords=coords,
             cfg=cfg,
-            bold_axes=subj.bold_axes,
+            bold_axes=node_input_axes,
         )
         data_list.append(data)
     return data_list
@@ -1076,7 +1104,12 @@ def run_cv(
                 + ", ".join(combat_summary["train_sites"])
                 + "\n"
             )
-            fold_base_data = build_all_data(fold_subjects, coords=coords, cfg=cfg)
+            fold_base_data = build_all_data(
+                fold_subjects,
+                coords=coords,
+                cfg=cfg,
+                node_features=getattr(args, "node_features", "bold"),
+            )
             train_base = fold_base_data[: len(train_idx)]
             val_base = fold_base_data[len(train_idx) :]
         else:
@@ -1223,7 +1256,12 @@ def smoke_test() -> None:
         out_dir = Path(tmpdir)
         seed_everything(args.seed)
         print("Precomputing graphs …")
-        base_data = build_all_data(subjects, coords, cfg)
+        base_data = build_all_data(
+            subjects,
+            coords,
+            cfg,
+            node_features=getattr(args, "node_features", "bold"),
+        )
         print("Running cross-validation …")
         run_cv(subjects, base_data, cfg, args, out_dir, N_CLASSES, coords)
         assert (out_dir / "cv_summary.json").exists(), "cv_summary.json not created"
@@ -1324,6 +1362,12 @@ def main() -> None:
     print(f"  Label distribution: " +
           "  ".join(f"class {c}={n}" for c, n in zip(unique, counts)))
 
+    node_features = getattr(args, "node_features", "bold")
+    if node_features == "fc" and not getattr(args, "no_bold_encoder", False):
+        print("error: --node-features fc requires --no-bold-encoder")
+        sys.exit(1)
+    print(f"  Node features: {node_features}\n")
+
     # Out dir
     if args.out_dir is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1335,14 +1379,14 @@ def main() -> None:
         json.dump(vars(args), f, indent=2)
     print(f"  Output directory: {out_dir}\n")
 
-    # Config — infer BOLD T after axis normalisation when the CNN is disabled.
+    # Config — infer node-feature length when the CNN is disabled.
     bold_in_t = (
-        infer_normalised_bold_time_dim(subjects[0])
+        infer_node_feature_dim(subjects[0], node_features)
         if getattr(args, "no_bold_encoder", False)
         else None
     )
     if bold_in_t is not None:
-        print(f"  Linear BOLD projection input length: {bold_in_t}\n")
+        print(f"  Linear node-feature projection input length: {bold_in_t}\n")
     cfg = make_config(args, coords.shape[0], n_classes, bold_in_t=bold_in_t)
 
     # Precompute graphs once unless fold-wise ComBat changes the connectivity.
@@ -1357,7 +1401,12 @@ def main() -> None:
               f"{args.morphospace_x} × {args.morphospace_y}) …")
         if args.dataset == "hcp":
             print("  (HCP N=379: expect ~2–8 min depending on hardware)")
-        base_data_list = build_all_data(subjects, coords, cfg)
+        base_data_list = build_all_data(
+            subjects,
+            coords,
+            cfg,
+            node_features=node_features,
+        )
         print(f"  {len(base_data_list)} graphs ready.\n")
 
     run_cv(subjects, base_data_list, cfg, args, out_dir, n_classes, coords)
