@@ -54,6 +54,7 @@ from src.data.build_graph import subject_to_data
 from src.data.loaders import SubjectRecord, load_dataset
 from src.model.model import BGTESREModel
 from src.model.model_ablation import BGTESREModelAblation
+from src.preprocess.combat import harmonize_subject_connectivity
 from src.utils.config import (
     MEASURE_CODE_TO_ATTR,
     BGTESREConfig,
@@ -277,6 +278,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--weight-mode",   default="cost_penalised",
                    choices=["binary", "fc", "cost_penalised"])
     p.add_argument("--threshold-pct", type=float, default=1)
+    # Harmonization
+    p.add_argument("--combat-harmonize", action="store_true",
+                   help="For ABIDE, apply fold-wise ComBat-style harmonization "
+                        "to FC upper-triangle features before graph construction")
+    p.add_argument("--combat-site-file", default=None,
+                   help="Optional .npy/.txt/.csv site label file for ABIDE. "
+                        "If omitted, the loader looks for sites.npy, site.npy, "
+                        "site_ids.npy, site_labels.npy, batch.npy, or batches.npy")
+    p.add_argument("--combat-preserve-label", action="store_true",
+                   help="Include the class label as a covariate preserved by "
+                        "ComBat. Disabled by default to avoid validation-label "
+                        "use in preprocessing")
+    p.add_argument("--combat-no-fisher-z", action="store_true",
+                   help="Disable Fisher z transform before FC harmonization")
     # BOLD encoder
     p.add_argument("--no-bold-encoder", action="store_true",
                    help="Replace the CNN BOLD encoder with a single linear projection "
@@ -433,6 +448,33 @@ def scale_and_swap(
         scaled_nt = scaler.transform(raw_nt.T).T          # (T,N) → scale → (N,T)
         result.append(_swap_bold(base_data_list[i], scaled_nt.astype(np.float32)))
     return result
+
+
+def load_site_file(path: str, n_subjects: int) -> np.ndarray:
+    site_path = Path(path)
+    if not site_path.is_file():
+        raise FileNotFoundError(f"ComBat site file does not exist: {site_path}")
+    if site_path.suffix == ".npy":
+        sites = np.load(site_path, allow_pickle=True)
+    else:
+        sites = np.loadtxt(site_path, dtype=str, delimiter=",")
+    sites = np.asarray(sites).reshape(-1)
+    if sites.shape[0] != n_subjects:
+        raise ValueError(
+            f"ComBat site file {site_path} has {sites.shape[0]} labels, but "
+            f"the dataset has {n_subjects} subjects"
+        )
+    return sites
+
+
+def attach_sites(
+    subjects: list[SubjectRecord],
+    sites: np.ndarray,
+) -> list[SubjectRecord]:
+    return [
+        subject._replace(site=sites[i].item() if hasattr(sites[i], "item") else sites[i])
+        for i, subject in enumerate(subjects)
+    ]
 
 
 # ── Train / evaluate ──────────────────────────────────────────────────────────
@@ -991,11 +1033,12 @@ def train_fold(
 
 def run_cv(
     subjects: list[SubjectRecord],
-    base_data_list: list[Data],
+    base_data_list: list[Data] | None,
     cfg: BGTESREConfig,
     args: argparse.Namespace,
     out_dir: Path,
     n_classes: int,
+    coords: np.ndarray,
 ) -> None:
     labels_arr = np.array([s.label for s in subjects])
     skf = StratifiedKFold(n_splits=args.k, shuffle=True, random_state=args.seed)
@@ -1009,18 +1052,59 @@ def run_cv(
         print(f"  FOLD {fold_idx}  —  train {len(train_idx)}  val {len(val_idx)}")
         print(f"{'='*60}\n")
 
+        if getattr(args, "combat_harmonize", False):
+            if args.dataset != "abide":
+                raise ValueError("--combat-harmonize is currently supported for ABIDE only")
+            fold_indices = list(train_idx) + list(val_idx)
+            print("  Applying fold-wise ComBat harmonization to ABIDE FC ...")
+            fold_subjects, combat_summary = harmonize_subject_connectivity(
+                subjects,
+                list(train_idx),
+                fold_indices,
+                preserve_label=getattr(args, "combat_preserve_label", False),
+                fisher_z=not getattr(args, "combat_no_fisher_z", False),
+            )
+            if combat_summary["unseen_target_sites"]:
+                print(
+                    "  Warning: validation contains site(s) absent from the "
+                    "training fold; no site-specific ComBat parameters were "
+                    "available for "
+                    + ", ".join(combat_summary["unseen_target_sites"])
+                )
+            print(
+                "  ComBat train sites: "
+                + ", ".join(combat_summary["train_sites"])
+                + "\n"
+            )
+            fold_base_data = build_all_data(fold_subjects, coords=coords, cfg=cfg)
+            train_base = fold_base_data[: len(train_idx)]
+            val_base = fold_base_data[len(train_idx) :]
+        else:
+            if base_data_list is None:
+                raise RuntimeError("base_data_list is required when ComBat is disabled")
+            train_base = [base_data_list[i] for i in train_idx]
+            val_base = [base_data_list[i] for i in val_idx]
+
         # ── Scale BOLD (fit on train only, apply to both) ─────────────────
         if args.scaler == "none":
-            train_data    = [base_data_list[i] for i in train_idx]
-            val_data      = [base_data_list[i] for i in val_idx]
+            train_data = train_base
+            val_data = val_base
         else:
             scaler = StandardScaler() if args.scaler == "standard" else MinMaxScaler()
             train_flat = np.vstack(
-                [base_data_list[i].bold.numpy().T for i in train_idx]
+                [data.bold.numpy().T for data in train_base]
             )  # (S_train * T, N)
             scaler.fit(train_flat)
-            train_data = scale_and_swap(scaler, base_data_list, list(train_idx))
-            val_data   = scale_and_swap(scaler, base_data_list, list(val_idx))
+            train_data = scale_and_swap(
+                scaler,
+                train_base,
+                list(range(len(train_base))),
+            )
+            val_data = scale_and_swap(
+                scaler,
+                val_base,
+                list(range(len(val_base))),
+            )
         all_fold_data = train_data + val_data
 
         fold_out = out_dir / f"fold_{fold_idx}"
@@ -1141,7 +1225,7 @@ def smoke_test() -> None:
         print("Precomputing graphs …")
         base_data = build_all_data(subjects, coords, cfg)
         print("Running cross-validation …")
-        run_cv(subjects, base_data, cfg, args, out_dir, N_CLASSES)
+        run_cv(subjects, base_data, cfg, args, out_dir, N_CLASSES, coords)
         assert (out_dir / "cv_summary.json").exists(), "cv_summary.json not created"
         for fold in range(args.k):
             assert (out_dir / f"fold_{fold}" / "run_summary.json").exists()
@@ -1210,8 +1294,29 @@ def main() -> None:
     # Load dataset
     print(f"Loading {args.dataset.upper()} from {root} …")
     subjects, coords = load_dataset(args.dataset, root)
+    if args.combat_site_file is not None:
+        subjects = attach_sites(subjects, load_site_file(args.combat_site_file, len(subjects)))
     print(f"  {len(subjects)} subjects loaded  |  {coords.shape[0]} regions  |  "
           f"coords shape {coords.shape}")
+    if getattr(args, "combat_harmonize", False):
+        if args.dataset != "abide":
+            print("error: --combat-harmonize is currently supported for dataset 'abide' only")
+            sys.exit(1)
+        if any(subject.site is None for subject in subjects):
+            print(
+                "error: --combat-harmonize requires ABIDE site labels. Add one "
+                "of sites.npy, site.npy, site_ids.npy, site_labels.npy, "
+                "batch.npy, or batches.npy to the data directory, or pass "
+                "--combat-site-file."
+            )
+            sys.exit(1)
+        site_counts = defaultdict(int)
+        for subject in subjects:
+            site_counts[str(subject.site)] += 1
+        print(
+            "  ComBat harmonization: enabled for FC upper-triangle features | "
+            f"{len(site_counts)} sites"
+        )
 
     labels_arr = np.array([s.label for s in subjects])
     n_classes  = int(labels_arr.max()) + 1
@@ -1240,15 +1345,22 @@ def main() -> None:
         print(f"  Linear BOLD projection input length: {bold_in_t}\n")
     cfg = make_config(args, coords.shape[0], n_classes, bold_in_t=bold_in_t)
 
-    # Precompute graphs once (expensive — ~2 min for HCP at N=379)
-    print(f"Precomputing graph structures (morphospace: "
-          f"{args.morphospace_x} × {args.morphospace_y}) …")
-    if args.dataset == "hcp":
-        print("  (HCP N=379: expect ~2–8 min depending on hardware)")
-    base_data_list = build_all_data(subjects, coords, cfg)
-    print(f"  {len(base_data_list)} graphs ready.\n")
+    # Precompute graphs once unless fold-wise ComBat changes the connectivity.
+    if getattr(args, "combat_harmonize", False):
+        print(
+            "Graph structures will be built inside each fold after ComBat "
+            "harmonization.\n"
+        )
+        base_data_list = None
+    else:
+        print(f"Precomputing graph structures (morphospace: "
+              f"{args.morphospace_x} × {args.morphospace_y}) …")
+        if args.dataset == "hcp":
+            print("  (HCP N=379: expect ~2–8 min depending on hardware)")
+        base_data_list = build_all_data(subjects, coords, cfg)
+        print(f"  {len(base_data_list)} graphs ready.\n")
 
-    run_cv(subjects, base_data_list, cfg, args, out_dir, n_classes)
+    run_cv(subjects, base_data_list, cfg, args, out_dir, n_classes, coords)
 
 
 if __name__ == "__main__":

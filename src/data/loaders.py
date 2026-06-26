@@ -17,17 +17,19 @@ ABIDE layout (884 subjects, 160 regions):
 
 from __future__ import annotations
 
-from collections import namedtuple
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, NamedTuple, Tuple
 
 import numpy as np
 
 # bold_axes tells subject_to_data whether bold is (N,T) or (T,N)
-SubjectRecord = namedtuple(
-    "SubjectRecord",
-    ["bold", "fc", "label", "subject_id", "bold_axes"],
-)
+class SubjectRecord(NamedTuple):
+    bold: np.ndarray
+    fc: np.ndarray
+    label: int
+    subject_id: str
+    bold_axes: str
+    site: str | int | None = None
 
 
 def load_hcp(root: str) -> Tuple[List[SubjectRecord], np.ndarray]:
@@ -69,6 +71,7 @@ def load_abide(root: str) -> Tuple[List[SubjectRecord], np.ndarray]:
     fc_arr   = np.load(root / "connectivity.npy")   # (S, N, N)
     labels   = np.load(root / "labels.npy")         # (S,)
     coords   = np.load(root / "coords.npy")         # (N, 3)
+    sites = _load_optional_abide_sites(root, len(labels))
 
     subjects = [
         SubjectRecord(
@@ -77,10 +80,35 @@ def load_abide(root: str) -> Tuple[List[SubjectRecord], np.ndarray]:
             label=int(labels[i]),
             subject_id=f"abide_{i:04d}",
             bold_axes="TN",
+            site=None if sites is None else sites[i].item(),
         )
         for i in range(len(labels))
     ]
     return subjects, coords
+
+
+def _load_optional_abide_sites(root: Path, n_subjects: int) -> np.ndarray | None:
+    """Load optional ABIDE acquisition-site labels from common flat files."""
+    candidates = (
+        "sites.npy",
+        "site.npy",
+        "site_ids.npy",
+        "site_labels.npy",
+        "batch.npy",
+        "batches.npy",
+    )
+    for name in candidates:
+        path = root / name
+        if not path.is_file():
+            continue
+        sites = np.load(path, allow_pickle=True)
+        if sites.shape[0] != n_subjects:
+            raise ValueError(
+                f"{path} contains {sites.shape[0]} site labels, but ABIDE has "
+                f"{n_subjects} subjects"
+            )
+        return sites
+    return None
 
 
 def load_islem(

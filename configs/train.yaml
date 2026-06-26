@@ -63,6 +63,15 @@ training:
   embedding_monitor: val
   embedding_monitor_every: 1
 
+harmonization:
+  # ABIDE only. Fits ComBat-style site harmonization on each training fold's
+  # FC upper-triangle features, then applies it to that fold's train/val FC
+  # before graph construction. Requires site labels.
+  combat_harmonize: false
+  combat_site_file: null
+  combat_preserve_label: false
+  combat_no_fisher_z: false
+
 model:
   # full | ablation_no_rotary
   model: full
