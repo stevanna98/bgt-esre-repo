@@ -33,22 +33,22 @@ cross_validation:
   k: 5
 
 training:
-  epochs: 200
+  epochs: 100
 
   # Start conservatively and increase after measuring GPU memory.
   batch_size: 8
 
-  lr: 0.0001
-  weight_decay: 0.05
+  lr: 0.00005
+  weight_decay: 0.1
 
   # BOLD scaling fitted only on each training fold:
   # standard | minmax | none
   scaler: standard
   selection_metric: loss
-  label_smoothing: 0.05
+  label_smoothing: 0.1
 
   # Stop after this many epochs without improvement in selection_metric.
-  patience: 15
+  patience: 5
 
   # ReduceLROnPlateau settings, also driven by selection_metric.
   lr_patience: 5
@@ -67,19 +67,19 @@ model:
   # full | ablation_no_rotary
   model: full
 
-  hidden_dim: 64
-  num_layers: 2
+  hidden_dim: 32
+  num_layers: 1
   # hidden_dim / num_heads must be an even integer for the full ESRE model.
-  num_heads: 4
+  num_heads: 2
 
   # Currently precomputed but not used because normal training disables LapPE.
   k_lap: 16
-  dropout: 0.5
-  readout_dropout: 0.5
+  dropout: 0.6
+  readout_dropout: 0.6
 
   # Subject-level readout over node embeddings:
   # flatten | mean_std | mean | max | attention
-  readout_pool: flatten
+  readout_pool: mean_std
   use_virtual_node: false
 
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
