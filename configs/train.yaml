@@ -44,11 +44,11 @@ training:
   # BOLD scaling fitted only on each training fold:
   # standard | minmax | none
   scaler: standard
-  selection_metric: loss
+  selection_metric: auc
   label_smoothing: 0.1
 
   # Stop after this many epochs without improvement in selection_metric.
-  patience: 5
+  patience: 20
 
   # ReduceLROnPlateau settings, also driven by selection_metric.
   lr_patience: 5
