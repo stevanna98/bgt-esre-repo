@@ -38,14 +38,14 @@ training:
   # Start conservatively and increase after measuring GPU memory.
   batch_size: 8
 
-  lr: 0.00005
-  weight_decay: 0.1
+  lr: 0.0001
+  weight_decay: 0.03
 
   # BOLD scaling fitted only on each training fold:
   # standard | minmax | none
   scaler: standard
   selection_metric: auc
-  label_smoothing: 0.1
+  label_smoothing: 0.05
 
   # Stop after this many epochs without improvement in selection_metric.
   patience: 20
@@ -79,7 +79,7 @@ model:
 
   # Subject-level readout over node embeddings:
   # flatten | mean_std | mean | max | attention
-  readout_pool: mean_std
+  readout_pool: max
   use_virtual_node: false
 
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
