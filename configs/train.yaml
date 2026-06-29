@@ -48,7 +48,7 @@ training:
   label_smoothing: 0.05
 
   # Stop after this many epochs without improvement in selection_metric.
-  patience: 20
+  patience: 15
 
   # ReduceLROnPlateau settings, also driven by selection_metric.
   lr_patience: 5
@@ -77,9 +77,9 @@ model:
   model: full
 
   hidden_dim: 32
-  num_layers: 1
+  num_layers: 2
   # hidden_dim / num_heads must be an even integer for the full ESRE model.
-  num_heads: 2
+  num_heads: 4
 
   # Currently precomputed but not used because normal training disables LapPE.
   k_lap: 16
@@ -88,7 +88,7 @@ model:
 
   # Subject-level readout over node embeddings:
   # flatten | mean_std | mean | max | attention
-  readout_pool: max
+  readout_pool: flatten
 
   # bold: per-region BOLD time series as node features.
   # fc: each region's FC row as node features. With ComBat enabled, this uses
@@ -104,14 +104,14 @@ graph:
   # Available edge measures: ediff, erout, ebc, ecc, comm, ep.
   # These two measures become the two log-morphospace coordinates.
   morphospace_x: ediff
-  morphospace_y: erout
+  morphospace_y: comm
 
   # binary | fc | cost_penalised
   weight_mode: cost_penalised
 
   # Fraction of positive FC edges retained, in (0, 1].
   # 1.0 means 100%; 0.2 means the strongest 20%.
-  threshold_pct: 0.2
+  threshold_pct: 0.15
 
 runtime:
   seed: 42
