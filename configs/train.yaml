@@ -108,6 +108,10 @@ graph:
 
   # binary | fc | cost_penalised
   weight_mode: cost_penalised
+  # Numeric decay constant, or auto for lambda = 1 / mean connected edge distance.
+  eco_lambda: 0.1
+  # true zeros morphospace phi while preserving FC graph construction.
+  no_morphospace: false
 
   # Fraction of positive FC edges retained, in (0, 1].
   # 1.0 means 100%; 0.2 means the strongest 20%.

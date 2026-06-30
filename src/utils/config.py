@@ -58,6 +58,7 @@ class PrecomputeConfig:
     threshold_pct: float = 1
     eps: float = 1e-8
     eco_lambda: Optional[float] = 0.1   # None → auto-computed from mean edge distance
+    use_morphospace: bool = True
 
 
 @dataclass

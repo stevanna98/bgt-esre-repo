@@ -210,6 +210,8 @@ def subject_to_data(
         axis=1,
     ).astype(np.float32)
     phi = np.nan_to_num(phi, nan=0.0, posinf=0.0, neginf=0.0)
+    if not cfg.precompute.use_morphospace:
+        phi = np.zeros_like(phi, dtype=np.float32)
 
     # ── 6. Laplacian positional encodings ─────────────────────────────────
     lap_pe = _lap_pe(A, cfg.model.k_lap)                 # (N, k)

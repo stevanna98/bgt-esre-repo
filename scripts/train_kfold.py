@@ -148,6 +148,17 @@ def _coerce_option_value(
     return coerced
 
 
+def _parse_eco_lambda(value: str | float | int | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (float, int)):
+        return float(value)
+    lowered = value.strip().lower()
+    if lowered in {"auto", "none", "null"}:
+        return None
+    return float(value)
+
+
 def _load_yaml_defaults(path: str, parser: argparse.ArgumentParser) -> dict:
     try:
         import yaml
@@ -282,6 +293,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--weight-mode",   default="cost_penalised",
                    choices=["binary", "fc", "cost_penalised"])
     p.add_argument("--threshold-pct", type=float, default=1)
+    p.add_argument("--eco-lambda", type=_parse_eco_lambda, default=0.1,
+                   help="'auto' uses lambda = 1 / mean connected edge distance; "
+                        "otherwise pass a numeric decay constant")
+    p.add_argument("--no-morphospace", action="store_true",
+                   help="Zero edge phi so attention receives no morphospace signal")
     # Harmonization
     p.add_argument("--combat-harmonize", action="store_true",
                    help="For ABIDE, apply fold-wise ComBat-style harmonization "
@@ -369,6 +385,8 @@ def make_config(
             topo_metric_y_attr=MEASURE_CODE_TO_ATTR[args.morphospace_y],
             weight_mode=args.weight_mode,
             threshold_pct=args.threshold_pct,
+            eco_lambda=args.eco_lambda,
+            use_morphospace=not getattr(args, "no_morphospace", False),
         ),
     )
 
