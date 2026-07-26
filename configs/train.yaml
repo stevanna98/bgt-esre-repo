@@ -100,7 +100,7 @@ model:
   # learned: gamma=tanh(v_scale) is trained from value_gamma_init.
   # one: fix gamma=1, removing the gate while keeping the full value correction.
   # zero: fix gamma=0, disabling the morphospace value correction.
-  value_gamma_mode: learned
+  value_gamma_mode: zero
   value_gamma_init: 0.01
 
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
