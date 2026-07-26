@@ -63,6 +63,19 @@ Run the focused harmonization tests with:
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
+## Cost-value gate monitor
+
+After every training epoch, each transformer layer's effective cost-value gate
+`gamma = tanh(v_scale)` is recorded and plotted:
+
+```text
+runs/<run>/fold_<k>/plots/cost_value_gamma.png
+runs/<run>/fold_<k>/gamma/value_gamma.jsonl
+```
+
+The JSONL file contains both the raw `v_scale` parameter and effective `gamma`
+for every layer and epoch.
+
 ## Embedding Collapse Monitor
 
 Training saves per-stage subject cosine-similarity heatmaps by default for the validation split every epoch:

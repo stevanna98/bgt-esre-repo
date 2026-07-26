@@ -110,7 +110,7 @@ graph:
   # binary | fc | cost_penalised
   weight_mode: cost_penalised
   # Numeric decay constant, or auto for lambda = 1 / mean connected edge distance.
-  eco_lambda: 0.1
+  eco_lambda: 0.001
   # true zeros morphospace phi while preserving FC graph construction.
   no_morphospace: false
 

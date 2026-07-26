@@ -69,6 +69,7 @@ from src.utils.plotting import (
     plot_stage_cosine_architecture_grid,
     plot_attention_heatmap,
     plot_attention_per_label,
+    plot_cost_value_gamma,
     plot_metric_train_val,
     plot_train_loss,
 )
@@ -660,6 +661,37 @@ def refresh_plots(history: dict, plots_dir: Path) -> None:
         plot_metric_train_val(history, metric, plots_dir / f"{metric}.png")
 
 
+def collect_cost_value_gamma(model: torch.nn.Module) -> dict[str, dict[str, float]]:
+    """Return raw and effective cost-value gates for every transformer layer."""
+    values: dict[str, dict[str, float]] = {}
+    for layer_idx, layer in enumerate(model.layers, start=1):
+        raw = float(layer.attn.v_scale.detach().cpu().item())
+        values[f"layer_{layer_idx}"] = {
+            "raw_v_scale": raw,
+            "gamma": float(np.tanh(raw)),
+        }
+    return values
+
+
+def append_cost_value_gamma(
+    model: torch.nn.Module,
+    epoch: int,
+    history: dict[str, list[float]],
+    jsonl_path: Path,
+) -> None:
+    """Record and persist the cost-value gate after one training epoch."""
+    layer_values = collect_cost_value_gamma(model)
+    for layer_name, values in layer_values.items():
+        layer_idx = layer_name.rsplit("_", 1)[-1]
+        history.setdefault(f"v_scale_layer_{layer_idx}", []).append(
+            values["raw_v_scale"]
+        )
+        history.setdefault(f"gamma_layer_{layer_idx}", []).append(values["gamma"])
+
+    with jsonl_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"epoch": epoch, "layers": layer_values}) + "\n")
+
+
 def save_attention(
     attn_overall: np.ndarray,
     attn_per_label: dict[int, np.ndarray],
@@ -898,9 +930,13 @@ def train_fold(
     plots_dir = fold_out / "plots"
     attn_dir  = fold_out / "attn"
     embed_dir = fold_out / "embeddings"
+    gamma_dir = fold_out / "gamma"
     plots_dir.mkdir(parents=True, exist_ok=True)
     attn_dir.mkdir(parents=True, exist_ok=True)
     embed_dir.mkdir(parents=True, exist_ok=True)
+    gamma_dir.mkdir(parents=True, exist_ok=True)
+    gamma_history_path = gamma_dir / "value_gamma.jsonl"
+    gamma_history_path.write_text("", encoding="utf-8")
 
     train_loader = PyGDataLoader(train_data, batch_size=args.batch_size,
                                  shuffle=True,  drop_last=False)
@@ -959,6 +995,16 @@ def train_fold(
             history[f"train_{m}"].append(train_m.get(m, float("nan")))
             history[f"val_{m}"].append(val_m.get(m, float("nan")))
         history["lr"].append(current_lr)
+        append_cost_value_gamma(
+            model,
+            epoch,
+            history,
+            gamma_history_path,
+        )
+        plot_cost_value_gamma(
+            history,
+            plots_dir / "cost_value_gamma.png",
+        )
 
         _print_epoch(fold_idx, epoch, args.epochs, train_m, val_m, current_lr)
 

@@ -69,6 +69,41 @@ def plot_metric_train_val(
     plt.close(fig)
 
 
+def plot_cost_value_gamma(
+    history: Dict[str, List[float]],
+    out_path: str | Path,
+) -> None:
+    """Plot the effective cost-value gate gamma=tanh(v_scale) per layer."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    gamma_keys = sorted(
+        (key for key in history if key.startswith("gamma_layer_")),
+        key=lambda key: int(key.rsplit("_", 1)[-1]),
+    )
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for key in gamma_keys:
+        values = history[key]
+        layer = key.rsplit("_", 1)[-1]
+        ax.plot(
+            range(1, len(values) + 1),
+            values,
+            marker="o",
+            markersize=3,
+            label=f"layer {layer}",
+        )
+    ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel(r"Effective gate $\gamma=\tanh(v\_scale)$")
+    ax.set_ylim(-1.0, 1.0)
+    ax.set_title("Cost-value gate by transformer layer")
+    if gamma_keys:
+        ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def plot_attention_heatmap(
     matrix: np.ndarray,
     out_path: str | Path,
