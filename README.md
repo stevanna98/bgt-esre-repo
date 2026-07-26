@@ -76,6 +76,20 @@ runs/<run>/fold_<k>/gamma/value_gamma.jsonl
 The JSONL file contains both the raw `v_scale` parameter and effective `gamma`
 for every layer and epoch.
 
+Control the gate with:
+
+```yaml
+model:
+  value_gamma_mode: learned  # learned | one | zero
+```
+
+Use `one` to remove the learnable gamma parameter while retaining the full
+value correction, or `zero` to disable the value correction:
+
+```bash
+python scripts/train_kfold.py --config configs/train.yaml --value-gamma-mode one
+```
+
 ## Embedding Collapse Monitor
 
 Training saves per-stage subject cosine-similarity heatmaps by default for the validation split every epoch:

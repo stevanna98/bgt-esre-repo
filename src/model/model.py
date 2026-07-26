@@ -78,6 +78,7 @@ class BGTESREModel(nn.Module):
                     model_cfg.ffn_multiplier,
                     model_cfg.dropout_attn,
                     model_cfg.dropout_ffn,
+                    model_cfg.value_gamma_mode,
                 )
                 for _ in range(model_cfg.num_layers)
             ]

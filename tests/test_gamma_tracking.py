@@ -10,7 +10,13 @@ import torch.nn as nn
 from scripts.train_kfold import (
     append_cost_value_gamma,
     collect_cost_value_gamma,
+    parse_args,
 )
+from src.model.esre import ESREAttention
+from src.model.esre_no_rotary import ESREAttentionNoRotary
+from src.model.model import BGTESREModel
+from src.model.model_ablation import BGTESREModelAblation
+from src.utils.config import BGTESREConfig, ModelConfig
 from src.utils.plotting import plot_cost_value_gamma
 
 
@@ -61,6 +67,56 @@ class GammaTrackingTests(unittest.TestCase):
             plot_cost_value_gamma(history, plot_path)
             self.assertTrue(plot_path.is_file())
             self.assertGreater(plot_path.stat().st_size, 0)
+
+    def test_gamma_modes_are_exact_and_fixed_modes_have_no_parameter(self) -> None:
+        for attention_cls in (ESREAttention, ESREAttentionNoRotary):
+            learned = attention_cls(8, 2, 0.0, value_gamma_mode="learned")
+            fixed_one = attention_cls(8, 2, 0.0, value_gamma_mode="one")
+            fixed_zero = attention_cls(8, 2, 0.0, value_gamma_mode="zero")
+
+            self.assertIsInstance(learned.v_scale, nn.Parameter)
+            self.assertEqual(float(learned.value_gamma()), 0.0)
+            self.assertIsNone(fixed_one.v_scale)
+            self.assertEqual(float(fixed_one.value_gamma()), 1.0)
+            self.assertIsNone(fixed_zero.v_scale)
+            self.assertEqual(float(fixed_zero.value_gamma()), 0.0)
+
+    def test_cli_accepts_fixed_one_mode(self) -> None:
+        args = parse_args(["--value-gamma-mode", "one"])
+        self.assertEqual(args.value_gamma_mode, "one")
+
+    def test_tracking_fixed_mode_records_gamma_without_raw_scale(self) -> None:
+        model = _Model()
+        model.layers[0].attn = ESREAttention(
+            8,
+            2,
+            0.0,
+            value_gamma_mode="one",
+        )
+        values = collect_cost_value_gamma(model)
+        self.assertIsNone(values["layer_1"]["raw_v_scale"])
+        self.assertEqual(values["layer_1"]["gamma"], 1.0)
+
+    def test_fixed_mode_propagates_into_both_model_variants(self) -> None:
+        cfg = BGTESREConfig(
+            model=ModelConfig(
+                num_regions=4,
+                hidden_dim=8,
+                num_layers=2,
+                num_heads=2,
+                use_bold_encoder=False,
+                bold_in_t=4,
+                value_gamma_mode="one",
+            )
+        )
+        for model_cls in (BGTESREModel, BGTESREModelAblation):
+            model = model_cls(cfg)
+            self.assertTrue(
+                all(layer.attn.value_gamma_mode == "one" for layer in model.layers)
+            )
+            self.assertTrue(
+                all(layer.attn.v_scale is None for layer in model.layers)
+            )
 
 
 if __name__ == "__main__":

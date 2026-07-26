@@ -284,6 +284,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         "features")
     p.add_argument("--use-virtual-node", action="store_true",
                    help="Enable the optional graph-level virtual-node side channel")
+    p.add_argument(
+        "--value-gamma-mode",
+        choices=["learned", "one", "zero"],
+        default="learned",
+        help="Cost-value correction multiplier: learn gamma, fix it to 1, "
+             "or fix it to 0",
+    )
     # Precompute / graph
     p.add_argument("--morphospace-x", default="comm",
                    choices=list(MEASURE_CODE_TO_ATTR),
@@ -378,6 +385,7 @@ def make_config(
             bold_in_t=bold_in_t if not use_bold_encoder else None,
             readout_pool=args.readout_pool,
             use_virtual_node=getattr(args, "use_virtual_node", False),
+            value_gamma_mode=getattr(args, "value_gamma_mode", "learned"),
         ),
         loss=LossConfig(label_smoothing=args.label_smoothing),
         precompute=PrecomputeConfig(
@@ -661,14 +669,29 @@ def refresh_plots(history: dict, plots_dir: Path) -> None:
         plot_metric_train_val(history, metric, plots_dir / f"{metric}.png")
 
 
-def collect_cost_value_gamma(model: torch.nn.Module) -> dict[str, dict[str, float]]:
+def collect_cost_value_gamma(
+    model: torch.nn.Module,
+) -> dict[str, dict[str, float | None]]:
     """Return raw and effective cost-value gates for every transformer layer."""
-    values: dict[str, dict[str, float]] = {}
+    values: dict[str, dict[str, float | None]] = {}
     for layer_idx, layer in enumerate(model.layers, start=1):
-        raw = float(layer.attn.v_scale.detach().cpu().item())
+        v_scale = layer.attn.v_scale
+        raw = (
+            float(v_scale.detach().cpu().item())
+            if v_scale is not None
+            else None
+        )
+        if hasattr(layer.attn, "value_gamma"):
+            gamma = float(layer.attn.value_gamma().detach().cpu().item())
+        elif raw is not None:
+            gamma = float(np.tanh(raw))
+        else:
+            raise AttributeError(
+                f"layer {layer_idx} attention does not expose value gamma"
+            )
         values[f"layer_{layer_idx}"] = {
             "raw_v_scale": raw,
-            "gamma": float(np.tanh(raw)),
+            "gamma": gamma,
         }
     return values
 
@@ -683,9 +706,10 @@ def append_cost_value_gamma(
     layer_values = collect_cost_value_gamma(model)
     for layer_name, values in layer_values.items():
         layer_idx = layer_name.rsplit("_", 1)[-1]
-        history.setdefault(f"v_scale_layer_{layer_idx}", []).append(
-            values["raw_v_scale"]
-        )
+        if values["raw_v_scale"] is not None:
+            history.setdefault(f"v_scale_layer_{layer_idx}", []).append(
+                values["raw_v_scale"]
+            )
         history.setdefault(f"gamma_layer_{layer_idx}", []).append(values["gamma"])
 
     with jsonl_path.open("a", encoding="utf-8") as f:

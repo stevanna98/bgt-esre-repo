@@ -47,7 +47,13 @@ class ESREAttentionNoRotary(MessagePassing):
         dropout:    Attention dropout probability.
     """
 
-    def __init__(self, hidden_dim: int, num_heads: int, dropout: float) -> None:
+    def __init__(
+        self,
+        hidden_dim: int,
+        num_heads: int,
+        dropout: float,
+        value_gamma_mode: str = "learned",
+    ) -> None:
         super().__init__(aggr="add", node_dim=0)
         assert hidden_dim % num_heads == 0, (
             f"hidden_dim={hidden_dim} must be divisible by num_heads={num_heads}"
@@ -55,6 +61,12 @@ class ESREAttentionNoRotary(MessagePassing):
         self.hidden_dim = hidden_dim
         self.num_heads  = num_heads
         self.d_h        = hidden_dim // num_heads
+        if value_gamma_mode not in {"learned", "one", "zero"}:
+            raise ValueError(
+                "value_gamma_mode must be 'learned', 'one', or 'zero', "
+                f"got {value_gamma_mode!r}"
+            )
+        self.value_gamma_mode = value_gamma_mode
 
         # Identical QKV projections to ESREAttention
         self.W_Q = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -64,11 +76,22 @@ class ESREAttentionNoRotary(MessagePassing):
 
         # Value augmentation — kept identical to ESREAttention
         self.V_phi   = nn.Parameter(torch.randn(num_heads, self.d_h, 2) * 0.1)
-        self.v_scale = nn.Parameter(torch.zeros(1))
+        if value_gamma_mode == "learned":
+            self.v_scale = nn.Parameter(torch.zeros(1))
+        else:
+            self.register_parameter("v_scale", None)
 
         self.attn_drop = nn.Dropout(dropout)
 
         self._last_alpha: Optional[Tensor] = None
+
+    def value_gamma(self) -> Tensor:
+        """Return the multiplier applied to the morphospace value correction."""
+        if self.value_gamma_mode == "one":
+            return self.V_phi.new_ones(())
+        if self.value_gamma_mode == "zero":
+            return self.V_phi.new_zeros(())
+        return torch.tanh(self.v_scale).squeeze(0)
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -140,6 +163,6 @@ class ESREAttentionNoRotary(MessagePassing):
 
         # Value augmentation: identical to ESREAttention
         v_correction = torch.einsum("ec,hdc->ehd", phi_edges, self.V_phi)  # (E, H, d_h)
-        V_aug = V_j + torch.tanh(self.v_scale) * v_correction
+        V_aug = V_j + self.value_gamma() * v_correction
 
         return alpha.unsqueeze(-1) * V_aug   # (E, H, d_h)

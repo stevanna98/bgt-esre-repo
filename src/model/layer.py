@@ -33,9 +33,15 @@ class BGTESRELayer(nn.Module):
         ffn_multiplier: int,
         dropout_attn: float,
         dropout_ffn: float,
+        value_gamma_mode: str = "learned",
     ) -> None:
         super().__init__()
-        self.attn = ESREAttention(hidden_dim, num_heads, dropout_attn)
+        self.attn = ESREAttention(
+            hidden_dim,
+            num_heads,
+            dropout_attn,
+            value_gamma_mode=value_gamma_mode,
+        )
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
         self.ffn = nn.Sequential(

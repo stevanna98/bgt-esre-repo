@@ -59,9 +59,15 @@ class BGTESRELayerNoRotary(nn.Module):
         ffn_multiplier: int,
         dropout_attn: float,
         dropout_ffn: float,
+        value_gamma_mode: str = "learned",
     ) -> None:
         super().__init__()
-        self.attn  = ESREAttentionNoRotary(hidden_dim, num_heads, dropout_attn)
+        self.attn = ESREAttentionNoRotary(
+            hidden_dim,
+            num_heads,
+            dropout_attn,
+            value_gamma_mode=value_gamma_mode,
+        )
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
         self.ffn   = nn.Sequential(
@@ -153,6 +159,7 @@ class BGTESREModelAblation(nn.Module):
                 model_cfg.ffn_multiplier,
                 model_cfg.dropout_attn,
                 model_cfg.dropout_ffn,
+                model_cfg.value_gamma_mode,
             )
             for _ in range(model_cfg.num_layers)
         ])

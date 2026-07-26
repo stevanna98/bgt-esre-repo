@@ -34,7 +34,13 @@ class ESREAttention(MessagePassing):
         dropout: Attention dropout probability.
     """
 
-    def __init__(self, hidden_dim: int, num_heads: int, dropout: float) -> None:
+    def __init__(
+        self,
+        hidden_dim: int,
+        num_heads: int,
+        dropout: float,
+        value_gamma_mode: str = "learned",
+    ) -> None:
         # node_dim=0: PyG 2.7+ changed the default to -2; we keep 0 so that
         # 3-D Q/K/V tensors of shape (N, H, d_h) are gathered correctly along dim 0.
         super().__init__(aggr="add", node_dim=0)
@@ -47,6 +53,12 @@ class ESREAttention(MessagePassing):
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.d_h = hidden_dim // num_heads
+        if value_gamma_mode not in {"learned", "one", "zero"}:
+            raise ValueError(
+                "value_gamma_mode must be 'learned', 'one', or 'zero', "
+                f"got {value_gamma_mode!r}"
+            )
+        self.value_gamma_mode = value_gamma_mode
 
         # Standard QKV projections
         self.W_Q = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -67,12 +79,23 @@ class ESREAttention(MessagePassing):
         self.V_phi = nn.Parameter(
             torch.randn(num_heads, self.d_h, 2) * 0.1
         )   # (H, d_h, 2)
-        self.v_scale = nn.Parameter(torch.zeros(1))
+        if value_gamma_mode == "learned":
+            self.v_scale = nn.Parameter(torch.zeros(1))
+        else:
+            self.register_parameter("v_scale", None)
 
         self.attn_drop = nn.Dropout(dropout)
 
         # Cache for last attention weights (used by loss module)
         self._last_alpha: Optional[Tensor] = None
+
+    def value_gamma(self) -> Tensor:
+        """Return the multiplier applied to the morphospace value correction."""
+        if self.value_gamma_mode == "one":
+            return self.V_phi.new_ones(())
+        if self.value_gamma_mode == "zero":
+            return self.V_phi.new_zeros(())
+        return torch.tanh(self.v_scale).squeeze(0)
 
     @staticmethod
     def _rotate(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
@@ -190,7 +213,7 @@ class ESREAttention(MessagePassing):
         v_correction = torch.einsum(
             "ec,hdc->ehd", phi_edges, self.V_phi
         )   # (E, H, d_h)
-        V_aug = V_j + torch.tanh(self.v_scale) * v_correction   # (E, H, d_h)
+        V_aug = V_j + self.value_gamma() * v_correction   # (E, H, d_h)
         # V_aug = V_j + v_correction   # (E, H, d_h) --- IGNORE ---
 
         # Weighted message

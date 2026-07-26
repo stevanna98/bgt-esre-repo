@@ -40,6 +40,7 @@ class ModelConfig:
     readout_pool: str = "flatten"  # "flatten" | "mean_std" | "mean" | "max" | "attention"
     readout_dropout: float = 0.5
     use_virtual_node: bool = False
+    value_gamma_mode: str = "learned"  # "learned" | "one" | "zero"
 
 
 @dataclass

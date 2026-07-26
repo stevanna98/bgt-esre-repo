@@ -97,6 +97,11 @@ model:
   node_features: fc
   use_virtual_node: false
 
+  # learned: gamma=tanh(v_scale) is trained from 0.
+  # one: fix gamma=1, removing the gate while keeping the full value correction.
+  # zero: fix gamma=0, disabling the morphospace value correction.
+  value_gamma_mode: learned
+
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
   # true: linear projection; normally use this for FC-only ad_lmci/nc_asd.
   no_bold_encoder: true
