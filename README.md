@@ -44,6 +44,25 @@ Equivalent config-style overrides are also supported:
 python scripts/train_kfold.py --config configs/train.yaml --set model.no_bold_encoder=true
 ```
 
+## ABIDE ComBat harmonization
+
+When `combat_harmonize: true`, each fold fits parametric empirical-Bayes
+ComBat using only its training subjects. The fitted additive and multiplicative
+site effects are then applied unchanged to the fold's training and validation
+FC matrices before graph construction. This requires site labels and at least
+two training subjects from each site in every fold.
+
+By default FC values are Fisher-z transformed before harmonization and class
+labels are not used as preprocessing covariates. Site labels can be placed in
+the data directory as `sites.npy` (or another supported site filename listed
+in `configs/train.yaml`) or supplied with `--combat-site-file`.
+
+Run the focused harmonization tests with:
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
 ## Embedding Collapse Monitor
 
 Training saves per-stage subject cosine-similarity heatmaps by default for the validation split every epoch:

@@ -64,9 +64,10 @@ training:
   embedding_monitor_every: 1
 
 harmonization:
-  # ABIDE only. Fits ComBat-style site harmonization on each training fold's
-  # FC upper-triangle features, then applies it to that fold's train/val FC
-  # before graph construction. Requires site labels.
+  # ABIDE only. Fits parametric empirical-Bayes ComBat on each training
+  # fold's FC upper-triangle features, then applies the fixed posterior site
+  # effects to that fold's train/val FC before graph construction. Requires
+  # at least two sites and two training subjects per site in every fold.
   combat_harmonize: true
   combat_site_file: null
   combat_preserve_label: false

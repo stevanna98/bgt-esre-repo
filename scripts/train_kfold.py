@@ -1102,7 +1102,10 @@ def run_cv(
             if args.dataset != "abide":
                 raise ValueError("--combat-harmonize is currently supported for ABIDE only")
             fold_indices = list(train_idx) + list(val_idx)
-            print("  Applying fold-wise ComBat harmonization to ABIDE FC ...")
+            print(
+                "  Applying fold-wise parametric empirical-Bayes ComBat "
+                "to ABIDE FC ..."
+            )
             fold_subjects, combat_summary = harmonize_subject_connectivity(
                 subjects,
                 list(train_idx),
@@ -1116,6 +1119,16 @@ def run_cv(
                     "training fold; no site-specific ComBat parameters were "
                     "available for "
                     + ", ".join(combat_summary["unseen_target_sites"])
+                )
+            nonconverged_sites = [
+                site
+                for site, converged in combat_summary["converged"].items()
+                if not converged
+            ]
+            if nonconverged_sites:
+                print(
+                    "  Warning: empirical-Bayes updates reached the iteration "
+                    "limit for site(s): " + ", ".join(nonconverged_sites)
                 )
             print(
                 "  ComBat train sites: "
