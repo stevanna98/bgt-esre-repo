@@ -40,6 +40,7 @@ class ESREAttention(MessagePassing):
         num_heads: int,
         dropout: float,
         value_gamma_mode: str = "learned",
+        value_gamma_init: float = 0.01,
     ) -> None:
         # node_dim=0: PyG 2.7+ changed the default to -2; we keep 0 so that
         # 3-D Q/K/V tensors of shape (N, H, d_h) are gathered correctly along dim 0.
@@ -59,6 +60,12 @@ class ESREAttention(MessagePassing):
                 f"got {value_gamma_mode!r}"
             )
         self.value_gamma_mode = value_gamma_mode
+        if not -1.0 < value_gamma_init < 1.0:
+            raise ValueError(
+                "value_gamma_init must be strictly between -1 and 1, "
+                f"got {value_gamma_init}"
+            )
+        self.value_gamma_init = float(value_gamma_init)
 
         # Standard QKV projections
         self.W_Q = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -80,7 +87,9 @@ class ESREAttention(MessagePassing):
             torch.randn(num_heads, self.d_h, 2) * 0.1
         )   # (H, d_h, 2)
         if value_gamma_mode == "learned":
-            self.v_scale = nn.Parameter(torch.zeros(1))
+            self.v_scale = nn.Parameter(
+                torch.tensor([math.atanh(self.value_gamma_init)])
+            )
         else:
             self.register_parameter("v_scale", None)
 

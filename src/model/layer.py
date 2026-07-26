@@ -34,6 +34,7 @@ class BGTESRELayer(nn.Module):
         dropout_attn: float,
         dropout_ffn: float,
         value_gamma_mode: str = "learned",
+        value_gamma_init: float = 0.01,
     ) -> None:
         super().__init__()
         self.attn = ESREAttention(
@@ -41,6 +42,7 @@ class BGTESRELayer(nn.Module):
             num_heads,
             dropout_attn,
             value_gamma_mode=value_gamma_mode,
+            value_gamma_init=value_gamma_init,
         )
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)

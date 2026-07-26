@@ -97,10 +97,11 @@ model:
   node_features: fc
   use_virtual_node: false
 
-  # learned: gamma=tanh(v_scale) is trained from 0.
+  # learned: gamma=tanh(v_scale) is trained from value_gamma_init.
   # one: fix gamma=1, removing the gate while keeping the full value correction.
   # zero: fix gamma=0, disabling the morphospace value correction.
   value_gamma_mode: one
+  value_gamma_init: 0.01
 
   # false: grouped CNN over genuine BOLD time series (HCP/ABIDE).
   # true: linear projection; normally use this for FC-only ad_lmci/nc_asd.
@@ -115,7 +116,7 @@ graph:
   # binary | fc | cost_penalised
   weight_mode: cost_penalised
   # Numeric decay constant, or auto for lambda = 1 / mean connected edge distance.
-  eco_lambda: 0.001
+  eco_lambda: 0.1
   # true zeros morphospace phi while preserving FC graph construction.
   no_morphospace: false
 

@@ -291,6 +291,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cost-value correction multiplier: learn gamma, fix it to 1, "
              "or fix it to 0",
     )
+    p.add_argument(
+        "--value-gamma-init",
+        type=float,
+        default=0.01,
+        help="Initial effective gamma when --value-gamma-mode=learned "
+             "(strictly between -1 and 1)",
+    )
     # Precompute / graph
     p.add_argument("--morphospace-x", default="comm",
                    choices=list(MEASURE_CODE_TO_ATTR),
@@ -386,6 +393,7 @@ def make_config(
             readout_pool=args.readout_pool,
             use_virtual_node=getattr(args, "use_virtual_node", False),
             value_gamma_mode=getattr(args, "value_gamma_mode", "learned"),
+            value_gamma_init=getattr(args, "value_gamma_init", 0.01),
         ),
         loss=LossConfig(label_smoothing=args.label_smoothing),
         precompute=PrecomputeConfig(

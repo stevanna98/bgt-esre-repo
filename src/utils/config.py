@@ -41,6 +41,7 @@ class ModelConfig:
     readout_dropout: float = 0.5
     use_virtual_node: bool = False
     value_gamma_mode: str = "learned"  # "learned" | "one" | "zero"
+    value_gamma_init: float = 0.01  # effective initial gamma in (-1, 1)
 
 
 @dataclass

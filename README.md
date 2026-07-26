@@ -81,6 +81,7 @@ Control the gate with:
 ```yaml
 model:
   value_gamma_mode: learned  # learned | one | zero
+  value_gamma_init: 0.01     # effective initial gamma for learned mode
 ```
 
 Use `one` to remove the learnable gamma parameter while retaining the full
@@ -89,6 +90,10 @@ value correction, or `zero` to disable the value correction:
 ```bash
 python scripts/train_kfold.py --config configs/train.yaml --value-gamma-mode one
 ```
+
+In learned mode, `v_scale` is initialized to `atanh(value_gamma_init)`, making
+the effective initial multiplier exactly `value_gamma_init`. Both `v_scale`
+and `V_phi` receive gradients from the first training batch.
 
 ## Embedding Collapse Monitor
 

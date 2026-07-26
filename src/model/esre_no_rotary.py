@@ -53,6 +53,7 @@ class ESREAttentionNoRotary(MessagePassing):
         num_heads: int,
         dropout: float,
         value_gamma_mode: str = "learned",
+        value_gamma_init: float = 0.01,
     ) -> None:
         super().__init__(aggr="add", node_dim=0)
         assert hidden_dim % num_heads == 0, (
@@ -67,6 +68,12 @@ class ESREAttentionNoRotary(MessagePassing):
                 f"got {value_gamma_mode!r}"
             )
         self.value_gamma_mode = value_gamma_mode
+        if not -1.0 < value_gamma_init < 1.0:
+            raise ValueError(
+                "value_gamma_init must be strictly between -1 and 1, "
+                f"got {value_gamma_init}"
+            )
+        self.value_gamma_init = float(value_gamma_init)
 
         # Identical QKV projections to ESREAttention
         self.W_Q = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -77,7 +84,9 @@ class ESREAttentionNoRotary(MessagePassing):
         # Value augmentation — kept identical to ESREAttention
         self.V_phi   = nn.Parameter(torch.randn(num_heads, self.d_h, 2) * 0.1)
         if value_gamma_mode == "learned":
-            self.v_scale = nn.Parameter(torch.zeros(1))
+            self.v_scale = nn.Parameter(
+                torch.tensor([math.atanh(self.value_gamma_init)])
+            )
         else:
             self.register_parameter("v_scale", None)
 

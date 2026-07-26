@@ -75,15 +75,18 @@ class GammaTrackingTests(unittest.TestCase):
             fixed_zero = attention_cls(8, 2, 0.0, value_gamma_mode="zero")
 
             self.assertIsInstance(learned.v_scale, nn.Parameter)
-            self.assertEqual(float(learned.value_gamma()), 0.0)
+            self.assertAlmostEqual(float(learned.value_gamma()), 0.01, places=7)
             self.assertIsNone(fixed_one.v_scale)
             self.assertEqual(float(fixed_one.value_gamma()), 1.0)
             self.assertIsNone(fixed_zero.v_scale)
             self.assertEqual(float(fixed_zero.value_gamma()), 0.0)
 
     def test_cli_accepts_fixed_one_mode(self) -> None:
-        args = parse_args(["--value-gamma-mode", "one"])
+        args = parse_args(
+            ["--value-gamma-mode", "one", "--value-gamma-init", "0.05"]
+        )
         self.assertEqual(args.value_gamma_mode, "one")
+        self.assertEqual(args.value_gamma_init, 0.05)
 
     def test_tracking_fixed_mode_records_gamma_without_raw_scale(self) -> None:
         model = _Model()
@@ -117,6 +120,28 @@ class GammaTrackingTests(unittest.TestCase):
             self.assertTrue(
                 all(layer.attn.v_scale is None for layer in model.layers)
             )
+
+    def test_learned_gamma_and_value_projection_train_from_first_batch(self) -> None:
+        torch.manual_seed(4)
+        attention = ESREAttention(
+            8,
+            2,
+            0.0,
+            value_gamma_mode="learned",
+            value_gamma_init=0.01,
+        )
+        x = torch.randn(4, 8)
+        edge_index = torch.tensor(
+            [[0, 1, 1, 2, 2, 3, 3, 0], [1, 0, 2, 1, 3, 2, 0, 3]],
+            dtype=torch.long,
+        )
+        phi = torch.randn(edge_index.shape[1], 2)
+        attention(x, edge_index, phi).square().mean().backward()
+
+        self.assertIsNotNone(attention.v_scale.grad)
+        self.assertGreater(float(attention.v_scale.grad.abs().sum()), 0.0)
+        self.assertIsNotNone(attention.V_phi.grad)
+        self.assertGreater(float(attention.V_phi.grad.abs().sum()), 0.0)
 
 
 if __name__ == "__main__":
