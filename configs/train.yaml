@@ -27,6 +27,9 @@ data:
   #   labels_<dataset>.npy  (subjects,)
   #   desikan_coords_left.npy (regions, 3)
   data_dir: /content/drive/MyDrive/IMPERIAL/data/neurips/abide/
+  # data_dir: F:\STE_IMPERIAL\neurips_rebuttal\abide 1
+  # data_dir: F:\STE_IMPERIAL\neurips_rebuttal\abide 2
+  # data_dir: F:\STE_IMPERIAL\neurips_rebuttal\hcp
 
 cross_validation:
   # Each class must contain at least this many subjects.
