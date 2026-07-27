@@ -222,12 +222,75 @@ The JSONL records effective gamma and, in learned mode, raw `v_scale`.
 The available model variants are:
 
 ```text
-full                asymmetric morphospace rotary Q/K encoding
-ablation_no_rotary  standard Q/K attention plus additive phi injection
+full                  asymmetric morphospace rotary Q/K encoding
+ablation_no_rotary    standard Q/K attention plus additive phi injection
+standard_transformer  FC support and ordinary scaled dot-product attention
+distance_bias         FC support and a monotonic Euclidean-distance logit bias
+distance_local_graph  coordinate-only local support and ordinary attention
 ```
 
 Both variants retain the configurable cost-value branch. Select the ablation
 with `--model ablation_no_rotary`.
+
+The three distance/locality controls bypass economy-measure computation
+entirely: they have no `phi`, rotary projection, additive morphospace
+injection, or value augmentation. They therefore require
+`--no-morphospace --value-gamma-mode zero --weight-mode fc`. Invalid graph or
+economy combinations are rejected before data loading.
+
+The standard and distance-bias controls use exactly the same thresholded
+positive-FC support as the full model. For distance bias, atlas Euclidean
+distance is divided by the mean distance over all unique non-diagonal atlas
+pairs, a fixed subject-independent normalisation. Its per-head logits are
+
+```text
+q_i^T k_j / sqrt(d_head) - softplus(alpha_head) * normalised_distance_ij
+```
+
+`--distance-bias-mode learned_monotonic` learns `alpha_head`; `fixed` keeps its
+scale fixed. `--distance-bias-init 1.0` initializes the effective positive
+scale to exactly one.
+
+The local control sorts all unique atlas pairs by Euclidean distance and keeps
+exactly `round(local_graph_density * N * (N - 1) / 2)` undirected pairs.
+Ties are resolved by region indices; both directions are stored and self-loops
+are omitted. This support is identical for every subject and independent of FC,
+labels, and ComBat.
+
+For example:
+
+```bash
+COMMON_CONTROL_ARGS="--no-morphospace --value-gamma-mode zero --weight-mode fc"
+
+python scripts/train_kfold.py --config configs/train.yaml \
+  --model standard_transformer $COMMON_CONTROL_ARGS \
+  --data-dir /path/to/dataset --out-dir runs/standard
+
+python scripts/train_kfold.py --config configs/train.yaml \
+  --model distance_bias --distance-bias-mode learned_monotonic \
+  --distance-bias-init 1.0 $COMMON_CONTROL_ARGS \
+  --data-dir /path/to/dataset --out-dir runs/distance_bias
+
+python scripts/train_kfold.py --config configs/train.yaml \
+  --model distance_local_graph --local-graph-density 0.15 \
+  $COMMON_CONTROL_ARGS \
+  --data-dir /path/to/dataset --out-dir runs/distance_local
+```
+
+Each new run creates `<out_dir>/cv_splits.json`. To guarantee identical folds,
+pass the full-model split file to every control:
+
+```bash
+python scripts/train_kfold.py --config configs/train.yaml \
+  --model distance_bias --no-morphospace --value-gamma-mode zero \
+  --weight-mode fc --cv-splits runs/full/cv_splits.json \
+  --data-dir /path/to/dataset --out-dir runs/distance_bias
+```
+
+If `cv_splits.json` already exists in an output directory it is reused and
+validated rather than regenerated. The present training protocol has one
+held-out validation fold per CV iteration, used both for checkpoint selection
+and metric reporting; it does not define a separate test split.
 
 The default subject readout preserves atlas order by flattening the per-region
 embeddings. Alternatives are `mean_std`, `mean`, `max`, and learned
@@ -249,7 +312,12 @@ A completed output directory has the following main artifacts:
 ```text
 <out_dir>/
   resolved_args.json
+  resolved_config.json
+  cv_splits.json
   cv_summary.json
+  control_results.csv
+  control_summary.csv
+  control_summary.md
   fold_<k>/
     best_model.pt
     run_summary.json
@@ -275,6 +343,23 @@ A completed output directory has the following main artifacts:
       embedding_collapse_mean_cosine.png
       embedding_similarity/epoch_<n>/
 ```
+
+`control_results.csv` contains fold metrics, parameter counts, checkpoint paths,
+and the split-file path. `control_summary.csv` and `control_summary.md` contain
+within-run aggregate results. Combine completed, directly comparable full and
+control runs into the requested cross-dataset rebuttal table with:
+
+```bash
+python scripts/summarize_controls.py \
+  runs/hcp_full runs/hcp_standard runs/hcp_distance_bias runs/hcp_local \
+  runs/abide_full runs/abide_standard runs/abide_distance_bias runs/abide_local \
+  --out-dir runs/distance_control_comparison
+```
+
+The comparison directory contains combined `control_results.csv`,
+`control_summary.csv`, and `control_summary.md`, including BGT-ESRE-minus-control
+AUC differences. The summarizer rejects incomplete CV runs and mismatched fold
+assignments.
 
 `best_model.pt` is selected using `selection_metric` (`auc` or `loss`).
 Early stopping and `ReduceLROnPlateau` use the same metric.

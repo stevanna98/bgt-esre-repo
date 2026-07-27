@@ -24,6 +24,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import random
@@ -54,6 +55,7 @@ from src.data.build_graph import subject_to_data
 from src.data.loaders import SubjectRecord, load_dataset
 from src.model.model import BGTESREModel
 from src.model.model_ablation import BGTESREModelAblation
+from src.model.controls import ControlTransformerModel
 from src.preprocess.combat import harmonize_subject_connectivity
 from src.utils.config import (
     MEASURE_CODE_TO_ATTR,
@@ -90,7 +92,13 @@ REQUIRED_DATASET_FILES: dict[str, tuple[str, ...]] = {
     "nc_asd": ("data_nc_asd.npy", "labels_nc_asd.npy", "desikan_coords_left.npy"),
 }
 
-METRIC_NAMES = ["loss", "accuracy", "auc", "f1", "sensitivity", "specificity"]
+METRIC_NAMES = [
+    "loss", "accuracy", "balanced_accuracy", "auc", "f1",
+    "sensitivity", "specificity",
+]
+CONTROL_VARIANTS = {
+    "standard_transformer", "distance_bias", "distance_local_graph"
+}
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -235,6 +243,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Override the default data root for the chosen dataset")
     # Cross-validation
     p.add_argument("--k", type=int, default=5, help="Number of folds (default 5)")
+    p.add_argument(
+        "--cv-splits",
+        default=None,
+        help="Existing cv_splits.json to reuse exactly; otherwise one is created",
+    )
     # Training
     p.add_argument("--epochs",      type=int,   default=200)
     p.add_argument("--batch-size",  type=int,   default=64)
@@ -308,6 +321,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--weight-mode",   default="cost_penalised",
                    choices=["binary", "fc", "cost_penalised"])
     p.add_argument("--threshold-pct", type=float, default=1)
+    p.add_argument(
+        "--graph-construction",
+        choices=["auto", "fc", "distance_local"],
+        default="auto",
+    )
+    p.add_argument("--local-graph-density", type=float, default=0.15)
     p.add_argument("--eco-lambda", type=_parse_eco_lambda, default=0.1,
                    help="'auto' uses lambda = 1 / mean connected edge distance; "
                         "otherwise pass a numeric decay constant")
@@ -332,9 +351,21 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Replace the CNN BOLD encoder with a single linear projection "
                         "(useful when no real BOLD is available, e.g. FC-only datasets)")
     # Model variant
-    p.add_argument("--model", choices=["full", "ablation_no_rotary"], default="full",
+    p.add_argument(
+        "--model",
+        choices=[
+            "full", "ablation_no_rotary", "standard_transformer",
+            "distance_bias", "distance_local_graph",
+        ],
+        default="full",
                    help="'full' = BGTESREModel (rotary ESRE); "
-                        "'ablation_no_rotary' = standard dot-product + additive phi injection")
+                        "the three control variants bypass all economy features")
+    p.add_argument(
+        "--distance-bias-mode",
+        choices=["learned_monotonic", "fixed"],
+        default="learned_monotonic",
+    )
+    p.add_argument("--distance-bias-init", type=float, default=1.0)
     # Misc
     p.add_argument("--smoke", action="store_true",
                    help="Run a tiny synthetic end-to-end test and exit")
@@ -368,6 +399,45 @@ def seed_everything(seed: int) -> None:
 
 # ── Config construction ────────────────────────────────────────────────────────
 
+def validate_and_resolve_variant(args: argparse.Namespace) -> None:
+    """Resolve graph support and reject scientifically invalid combinations."""
+    variant = getattr(args, "model", "full")
+    requested_graph = getattr(args, "graph_construction", "auto")
+    expected_graph = (
+        "distance_local" if variant == "distance_local_graph" else "fc"
+    )
+    if requested_graph == "auto":
+        args.graph_construction = expected_graph
+    elif requested_graph != expected_graph:
+        raise ValueError(
+            f"model={variant!r} requires graph_construction={expected_graph!r}"
+        )
+    density = float(getattr(args, "local_graph_density", 0.15))
+    if not 0.0 < density <= 1.0:
+        raise ValueError("--local-graph-density must be in (0, 1]")
+    if variant != "distance_bias" and getattr(
+        args, "distance_bias_mode", "learned_monotonic"
+    ) != "learned_monotonic":
+        raise ValueError("--distance-bias-mode only applies to model=distance_bias")
+    if variant == "distance_bias" and getattr(args, "distance_bias_init", 1.0) <= 0:
+        raise ValueError("--distance-bias-init must be positive")
+    if variant in CONTROL_VARIANTS:
+        if not getattr(args, "no_morphospace", False):
+            raise ValueError(
+                "control models require --no-morphospace (economy is bypassed)"
+            )
+        if getattr(args, "value_gamma_mode", "learned") != "zero":
+            raise ValueError("control models require --value-gamma-mode zero")
+        if getattr(args, "weight_mode", "cost_penalised") == "cost_penalised":
+            raise ValueError(
+                "control models must not use --weight-mode cost_penalised; use fc"
+            )
+        if getattr(args, "combat_preserve_label", False):
+            raise ValueError(
+                "control experiments require diagnosis excluded from ComBat; "
+                "remove --combat-preserve-label"
+            )
+
 def make_config(
     args: argparse.Namespace,
     num_regions: int,
@@ -375,9 +445,12 @@ def make_config(
     bold_in_t: int | None = None,
 ) -> BGTESREConfig:
     use_bold_encoder = not getattr(args, "no_bold_encoder", False)
+    variant = getattr(args, "model", "full")
+    is_control = variant in CONTROL_VARIANTS
     return BGTESREConfig(
         model=ModelConfig(
             num_regions=num_regions,
+            variant=variant,
             hidden_dim=args.hidden_dim,
             num_classes=n_classes,
             num_layers=args.num_layers,
@@ -394,6 +467,10 @@ def make_config(
             use_virtual_node=getattr(args, "use_virtual_node", False),
             value_gamma_mode=getattr(args, "value_gamma_mode", "learned"),
             value_gamma_init=getattr(args, "value_gamma_init", 0.01),
+            distance_bias_mode=getattr(
+                args, "distance_bias_mode", "learned_monotonic"
+            ),
+            distance_bias_init=getattr(args, "distance_bias_init", 1.0),
         ),
         loss=LossConfig(label_smoothing=args.label_smoothing),
         precompute=PrecomputeConfig(
@@ -403,7 +480,12 @@ def make_config(
             weight_mode=args.weight_mode,
             threshold_pct=args.threshold_pct,
             eco_lambda=args.eco_lambda,
-            use_morphospace=not getattr(args, "no_morphospace", False),
+            use_morphospace=(
+                not getattr(args, "no_morphospace", False) and not is_control
+            ),
+            graph_construction=getattr(args, "graph_construction", "fc"),
+            local_graph_density=getattr(args, "local_graph_density", 0.15),
+            compute_economy=not is_control,
         ),
     )
 
@@ -683,6 +765,8 @@ def collect_cost_value_gamma(
     """Return raw and effective cost-value gates for every transformer layer."""
     values: dict[str, dict[str, float | None]] = {}
     for layer_idx, layer in enumerate(model.layers, start=1):
+        if not hasattr(layer.attn, "v_scale"):
+            continue
         v_scale = layer.attn.v_scale
         raw = (
             float(v_scale.detach().cpu().item())
@@ -962,13 +1046,14 @@ def train_fold(
     plots_dir = fold_out / "plots"
     attn_dir  = fold_out / "attn"
     embed_dir = fold_out / "embeddings"
-    gamma_dir = fold_out / "gamma"
+    track_gamma = getattr(args, "model", "full") not in CONTROL_VARIANTS
     plots_dir.mkdir(parents=True, exist_ok=True)
     attn_dir.mkdir(parents=True, exist_ok=True)
     embed_dir.mkdir(parents=True, exist_ok=True)
-    gamma_dir.mkdir(parents=True, exist_ok=True)
-    gamma_history_path = gamma_dir / "value_gamma.jsonl"
-    gamma_history_path.write_text("", encoding="utf-8")
+    gamma_history_path = fold_out / "gamma" / "value_gamma.jsonl"
+    if track_gamma:
+        gamma_history_path.parent.mkdir(parents=True, exist_ok=True)
+        gamma_history_path.write_text("", encoding="utf-8")
 
     train_loader = PyGDataLoader(train_data, batch_size=args.batch_size,
                                  shuffle=True,  drop_last=False)
@@ -984,8 +1069,18 @@ def train_fold(
         "all": all_loader,
     }
 
-    ModelCls = BGTESREModelAblation if getattr(args, "model", "full") == "ablation_no_rotary" else BGTESREModel
+    variant = getattr(args, "model", "full")
+    if variant == "ablation_no_rotary":
+        ModelCls = BGTESREModelAblation
+    elif variant in CONTROL_VARIANTS:
+        ModelCls = ControlTransformerModel
+    else:
+        ModelCls = BGTESREModel
     model = ModelCls(cfg).to(device)
+    parameter_count = sum(p.numel() for p in model.parameters())
+    trainable_parameter_count = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
@@ -1027,16 +1122,17 @@ def train_fold(
             history[f"train_{m}"].append(train_m.get(m, float("nan")))
             history[f"val_{m}"].append(val_m.get(m, float("nan")))
         history["lr"].append(current_lr)
-        append_cost_value_gamma(
-            model,
-            epoch,
-            history,
-            gamma_history_path,
-        )
-        plot_cost_value_gamma(
-            history,
-            plots_dir / "cost_value_gamma.png",
-        )
+        if track_gamma:
+            append_cost_value_gamma(
+                model,
+                epoch,
+                history,
+                gamma_history_path,
+            )
+            plot_cost_value_gamma(
+                history,
+                plots_dir / "cost_value_gamma.png",
+            )
 
         _print_epoch(fold_idx, epoch, args.epochs, train_m, val_m, current_lr)
 
@@ -1075,6 +1171,7 @@ def train_fold(
             torch.save(
                 dict(config=asdict(cfg), epoch=epoch,
                      model_variant=getattr(args, "model", "full"),
+                     parameter_count=parameter_count,
                      model_state=model.state_dict(), metrics=val_m),
                 fold_out / "best_model.pt",
             )
@@ -1129,6 +1226,9 @@ def train_fold(
         best_val_auc=best_val_auc,
         best_val_loss=best_val_loss,
         best_val_accuracy=best_val_metrics.get("accuracy", float("nan")),
+        best_val_balanced_accuracy=best_val_metrics.get(
+            "balanced_accuracy", float("nan")
+        ),
         best_val_sensitivity=best_val_metrics.get("sensitivity", float("nan")),
         best_val_specificity=best_val_metrics.get("specificity", float("nan")),
         best_val_f1=best_val_metrics.get("f1", float("nan")),
@@ -1139,6 +1239,17 @@ def train_fold(
         train_time_human=_format_time(elapsed),
         peak_python_ram_bytes=peak_python,
         peak_rss_bytes=peak_rss,
+        model_variant=variant,
+        dataset=getattr(args, "dataset", "synthetic"),
+        seed=getattr(args, "seed", None),
+        parameter_count=parameter_count,
+        trainable_parameter_count=trainable_parameter_count,
+        checkpoint=str((fold_out / "best_model.pt").resolve()),
+        split_file=getattr(args, "cv_splits_resolved", None),
+        graph_construction=cfg.precompute.graph_construction,
+        local_graph_density=cfg.precompute.local_graph_density,
+        distance_bias_mode=cfg.model.distance_bias_mode,
+        distance_bias_init=cfg.model.distance_bias_init,
     )
     if device.type == "cuda":
         summary["peak_gpu_bytes"] = torch.cuda.max_memory_allocated(device)
@@ -1155,6 +1266,74 @@ def train_fold(
 
 # ── Cross-validation loop ──────────────────────────────────────────────────────
 
+def _load_or_create_cv_splits(
+    subjects: list[SubjectRecord],
+    args: argparse.Namespace,
+    out_dir: Path,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Load exact folds or create and persist them once."""
+    output_path = out_dir / "cv_splits.json"
+    requested = getattr(args, "cv_splits", None)
+    source_path = Path(requested) if requested else output_path
+    labels = np.asarray([subject.label for subject in subjects])
+    subject_ids = [str(subject.subject_id) for subject in subjects]
+
+    if source_path.is_file():
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        if payload.get("subject_ids") != subject_ids:
+            raise ValueError(
+                f"CV split subject order in {source_path} does not match the dataset"
+            )
+        if int(payload.get("n_splits", -1)) != int(args.k):
+            raise ValueError(
+                f"CV split file has k={payload.get('n_splits')}, requested k={args.k}"
+            )
+        folds = [
+            (
+                np.asarray(fold["train_indices"], dtype=int),
+                np.asarray(fold["validation_indices"], dtype=int),
+            )
+            for fold in payload["folds"]
+        ]
+        all_indices = set(range(len(subjects)))
+        for fold_idx, (train_idx, val_idx) in enumerate(folds):
+            train_set, val_set = set(train_idx.tolist()), set(val_idx.tolist())
+            if train_set & val_set or train_set | val_set != all_indices:
+                raise ValueError(f"invalid partition in CV fold {fold_idx}")
+        print(f"Reusing CV splits from {source_path}")
+    else:
+        if requested:
+            raise FileNotFoundError(f"--cv-splits file does not exist: {source_path}")
+        splitter = StratifiedKFold(
+            n_splits=args.k, shuffle=True, random_state=args.seed
+        )
+        folds = list(splitter.split(np.zeros(len(subjects)), labels))
+        payload = {
+            "schema_version": 1,
+            "dataset": getattr(args, "dataset", None),
+            "n_subjects": len(subjects),
+            "n_splits": int(args.k),
+            "seed": int(args.seed),
+            "split_role": (
+                "validation folds are held out from training and are also used "
+                "for checkpoint selection; there is no independent test split"
+            ),
+            "subject_ids": subject_ids,
+            "labels": labels.astype(int).tolist(),
+            "folds": [
+                {
+                    "fold": fold_idx,
+                    "train_indices": train_idx.astype(int).tolist(),
+                    "validation_indices": val_idx.astype(int).tolist(),
+                }
+                for fold_idx, (train_idx, val_idx) in enumerate(folds)
+            ],
+        }
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    args.cv_splits_resolved = str(output_path.resolve())
+    return folds
+
+
 def run_cv(
     subjects: list[SubjectRecord],
     base_data_list: list[Data] | None,
@@ -1164,14 +1343,10 @@ def run_cv(
     n_classes: int,
     coords: np.ndarray,
 ) -> None:
-    labels_arr = np.array([s.label for s in subjects])
-    skf = StratifiedKFold(n_splits=args.k, shuffle=True, random_state=args.seed)
-
+    folds = _load_or_create_cv_splits(subjects, args, out_dir)
     fold_summaries = []
 
-    for fold_idx, (train_idx, val_idx) in enumerate(
-        skf.split(np.zeros(len(subjects)), labels_arr)
-    ):
+    for fold_idx, (train_idx, val_idx) in enumerate(folds):
         print(f"\n{'='*60}")
         print(f"  FOLD {fold_idx}  —  train {len(train_idx)}  val {len(val_idx)}")
         print(f"{'='*60}\n")
@@ -1258,14 +1433,18 @@ def run_cv(
         )
         fold_summaries.append(summary)
 
-    _save_cv_summary(fold_summaries, out_dir)
+    _save_cv_summary(fold_summaries, out_dir, args)
 
 
-def _save_cv_summary(summaries: list[dict], out_dir: Path) -> None:
+def _save_cv_summary(
+    summaries: list[dict],
+    out_dir: Path,
+    args: argparse.Namespace,
+) -> None:
     metrics_of_interest = [
         "best_val_auc", "best_val_loss",
         "best_val_accuracy", "best_val_sensitivity",
-        "best_val_specificity", "best_val_f1",
+        "best_val_balanced_accuracy", "best_val_specificity", "best_val_f1",
         "train_time_seconds",
     ]
     agg = {}
@@ -1276,6 +1455,14 @@ def _save_cv_summary(summaries: list[dict], out_dir: Path) -> None:
 
     cv_summary = dict(
         n_folds=len(summaries),
+        model_variant=getattr(args, "model", "full"),
+        dataset=getattr(args, "dataset", "synthetic"),
+        seed=getattr(args, "seed", None),
+        cv_splits=getattr(args, "cv_splits_resolved", None),
+        graph_construction=getattr(args, "graph_construction", None),
+        local_graph_density=getattr(args, "local_graph_density", None),
+        distance_bias_mode=getattr(args, "distance_bias_mode", None),
+        distance_bias_init=getattr(args, "distance_bias_init", None),
         fold_summaries=summaries,
         aggregated=agg,
     )
@@ -1285,6 +1472,88 @@ def _save_cv_summary(summaries: list[dict], out_dir: Path) -> None:
     print(f"\nCV summary saved to {path}")
     for key, stats in agg.items():
         print(f"  {key}: {stats['mean']:.4f} ± {stats['std']:.4f}")
+    _save_control_tables(summaries, agg, out_dir, args)
+
+
+def _save_control_tables(
+    summaries: list[dict],
+    aggregated: dict,
+    out_dir: Path,
+    args: argparse.Namespace,
+) -> None:
+    """Write machine-readable per-fold and aggregate result tables."""
+    metric_map = {
+        "auc": "best_val_auc",
+        "accuracy": "best_val_accuracy",
+        "balanced_accuracy": "best_val_balanced_accuracy",
+        "sensitivity": "best_val_sensitivity",
+        "specificity": "best_val_specificity",
+        "f1": "best_val_f1",
+    }
+    fields = [
+        "dataset", "model", "fold", "seed", *metric_map,
+        "parameter_count", "checkpoint_path", "split_file",
+    ]
+    with (out_dir / "control_results.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for summary in summaries:
+            row = {
+                "dataset": getattr(args, "dataset", "synthetic"),
+                "model": getattr(args, "model", "full"),
+                "seed": getattr(args, "seed", None),
+                "fold": summary["fold"],
+                "parameter_count": summary["parameter_count"],
+                "checkpoint_path": summary["checkpoint"],
+                "split_file": summary["split_file"],
+            }
+            row.update(
+                {name: summary.get(key, float("nan")) for name, key in metric_map.items()}
+            )
+            writer.writerow(row)
+
+    summary_fields = ["dataset", "model", "seed", "n_folds", "parameter_count"]
+    summary_row = {
+        "dataset": getattr(args, "dataset", "synthetic"),
+        "model": getattr(args, "model", "full"),
+        "seed": getattr(args, "seed", None),
+        "n_folds": len(summaries),
+        "parameter_count": summaries[0]["parameter_count"] if summaries else "",
+    }
+    for name, key in metric_map.items():
+        summary_fields.extend([f"{name}_mean", f"{name}_std"])
+        stats = aggregated.get(key, {})
+        summary_row[f"{name}_mean"] = stats.get("mean", float("nan"))
+        summary_row[f"{name}_std"] = stats.get("std", float("nan"))
+    with (out_dir / "control_summary.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=summary_fields)
+        writer.writeheader()
+        writer.writerow(summary_row)
+
+    markdown = [
+        "# Control result summary",
+        "",
+        "| Dataset | Variant | Folds | AUC | Balanced accuracy | Parameters |",
+        "|---|---|---:|---:|---:|---:|",
+        (
+            f"| {summary_row['dataset']} | {summary_row['model']} | "
+            f"{summary_row['n_folds']} | "
+            f"{summary_row['auc_mean']:.4f} ± {summary_row['auc_std']:.4f} | "
+            f"{summary_row['balanced_accuracy_mean']:.4f} ± "
+            f"{summary_row['balanced_accuracy_std']:.4f} | "
+            f"{summary_row['parameter_count']} |"
+        ),
+        "",
+        "Validation folds are used for checkpoint selection; these are not "
+        "independent test-set estimates.",
+    ]
+    (out_dir / "control_summary.md").write_text(
+        "\n".join(markdown) + "\n", encoding="utf-8"
+    )
 
 
 # ── Smoke test ─────────────────────────────────────────────────────────────────
@@ -1374,8 +1643,59 @@ def smoke_test() -> None:
         print("Running cross-validation …")
         run_cv(subjects, base_data, cfg, args, out_dir, N_CLASSES, coords)
         assert (out_dir / "cv_summary.json").exists(), "cv_summary.json not created"
+        assert (out_dir / "cv_splits.json").exists(), "cv_splits.json not created"
         for fold in range(args.k):
             assert (out_dir / f"fold_{fold}" / "run_summary.json").exists()
+
+        # Exercise every economy-free control, including checkpoint reload.
+        for variant in sorted(CONTROL_VARIANTS):
+            control_cfg = BGTESREConfig(
+                model=ModelConfig(
+                    num_regions=N_REG,
+                    variant=variant,
+                    hidden_dim=16,
+                    num_classes=N_CLASSES,
+                    num_layers=1,
+                    num_heads=2,
+                    dropout=0.0,
+                    dropout_attn=0.0,
+                    dropout_ffn=0.0,
+                    use_bold_encoder=False,
+                    bold_in_t=T,
+                    use_lpe=True,
+                    k_lap=4,
+                    readout_pool="mean",
+                    value_gamma_mode="zero",
+                ),
+                precompute=PrecomputeConfig(
+                    graph_construction=(
+                        "distance_local"
+                        if variant == "distance_local_graph"
+                        else "fc"
+                    ),
+                    local_graph_density=0.5,
+                    threshold_pct=0.5,
+                    weight_mode="fc",
+                    compute_economy=False,
+                    use_morphospace=False,
+                ),
+            )
+            graph = subject_to_data(
+                subjects[0].bold,
+                subjects[0].fc,
+                subjects[0].label,
+                coords,
+                control_cfg,
+            )
+            batch = next(iter(PyGDataLoader([graph], batch_size=1)))
+            control_model = ControlTransformerModel(control_cfg)
+            output = control_model(batch)
+            output["loss"].backward()
+            checkpoint = out_dir / f"{variant}_smoke.pt"
+            torch.save(control_model.state_dict(), checkpoint)
+            reloaded = ControlTransformerModel(control_cfg)
+            reloaded.load_state_dict(torch.load(checkpoint, map_location="cpu"))
+            assert output["logits"].shape == (1, N_CLASSES)
 
     print("\n" + "=" * 60)
     print("  SMOKE TEST PASSED")
@@ -1413,6 +1733,11 @@ def main() -> None:
     if args.smoke:
         smoke_test()
         return
+    try:
+        validate_and_resolve_variant(args)
+    except ValueError as exc:
+        print(f"error: {exc}")
+        sys.exit(2)
 
     if args.dataset is None:
         print("error: --dataset is required (hcp | abide) unless --smoke is set.")
@@ -1497,6 +1822,8 @@ def main() -> None:
     if bold_in_t is not None:
         print(f"  Linear node-feature projection input length: {bold_in_t}\n")
     cfg = make_config(args, coords.shape[0], n_classes, bold_in_t=bold_in_t)
+    with open(out_dir / "resolved_config.json", "w") as f:
+        json.dump(asdict(cfg), f, indent=2)
 
     # Precompute graphs once unless fold-wise ComBat changes the connectivity.
     if getattr(args, "combat_harmonize", False):
@@ -1506,8 +1833,14 @@ def main() -> None:
         )
         base_data_list = None
     else:
-        print(f"Precomputing graph structures (morphospace: "
-              f"{args.morphospace_x} × {args.morphospace_y}) …")
+        if cfg.precompute.compute_economy:
+            print(f"Precomputing graph structures (morphospace: "
+                  f"{args.morphospace_x} × {args.morphospace_y}) …")
+        else:
+            print(
+                "Precomputing control graph structures "
+                f"({cfg.precompute.graph_construction}; economy bypassed) …"
+            )
         if args.dataset == "hcp":
             print("  (HCP N=379: expect ~2–8 min depending on hardware)")
         base_data_list = build_all_data(
@@ -1519,6 +1852,8 @@ def main() -> None:
         print(f"  {len(base_data_list)} graphs ready.\n")
 
     run_cv(subjects, base_data_list, cfg, args, out_dir, n_classes, coords)
+    with open(out_dir / "resolved_args.json", "w") as f:
+        json.dump(vars(args), f, indent=2)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,8 @@ data:
 cross_validation:
   # Each class must contain at least this many subjects.
   k: 5
+  # Existing cv_splits.json to reuse; null creates/saves one in out_dir.
+  cv_splits: null
 
 training:
   epochs: 100
@@ -74,8 +76,12 @@ harmonization:
   combat_no_fisher_z: false
 
 model:
-  # full | ablation_no_rotary
+  # full | ablation_no_rotary | standard_transformer | distance_bias |
+  # distance_local_graph
   model: full
+  # Distance-bias controls only: learned_monotonic | fixed.
+  distance_bias_mode: learned_monotonic
+  distance_bias_init: 1.0
 
   hidden_dim: 32
   num_layers: 2
@@ -108,6 +114,11 @@ model:
   no_bold_encoder: true
 
 graph:
+  # auto selects FC support except for distance_local_graph.
+  # Explicit choices: auto | fc | distance_local
+  graph_construction: auto
+  # Exact coordinate-only density for distance_local_graph.
+  local_graph_density: 0.15
   # Available edge measures: ediff, erout, ebc, ecc, comm, ep.
   # These two measures become the two log-morphospace coordinates.
   morphospace_x: ediff

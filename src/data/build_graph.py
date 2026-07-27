@@ -1,15 +1,18 @@
 """Convert raw fMRI arrays for one subject into a PyG Data object.
 
-Produces all fields required by BGTCCREModel:
-    x           (N, 5)    — hand-crafted BOLD temporal statistics
+Always produces:
     edge_index  (2, 2E)   — bidirectional edges from thresholded FC
+    lap_pe      (N, k)    — Laplacian positional encodings
+    y           (1,)      — integer class label
+    bold        (N, T)    — BOLD or FC-row node features
+
+For economy-aware models it additionally produces:
     phi         (2E, 2)   — log-scale morphospace coordinates per edge
     FC          (2E,)     — FC weight per edge
     <seg_attr>  (2E,)     — segregation measure per edge  (e.g. E_diff)
     <int_attr>  (2E,)     — integration measure per edge  (e.g. E_rout)
-    lap_pe      (N, k)    — Laplacian positional encodings
-    y           (1,)      — integer class label
-    bold        (N, T)    — raw BOLD (kept for optional CNN encoder)
+
+The distance-bias control receives only normalised ``edge_distance``.
 """
 
 from __future__ import annotations
@@ -42,6 +45,53 @@ _COMPUTE_FN = {
     "G":      compute_communicability,
     "EP":     compute_edge_participation,
 }
+
+
+def atlas_distance_matrix(coords: np.ndarray) -> np.ndarray:
+    """Return the Euclidean atlas distance matrix."""
+    coords = np.asarray(coords, dtype=np.float64)
+    if coords.ndim != 2 or coords.shape[1] != 3:
+        raise ValueError(f"coords must have shape (N, 3), got {coords.shape}")
+    if not np.all(np.isfinite(coords)):
+        raise ValueError("coords contains non-finite values")
+    return cdist(coords, coords, metric="euclidean")
+
+
+def normalise_atlas_distances(dist_mat: np.ndarray) -> np.ndarray:
+    """Divide distances by the mean over all unique non-diagonal atlas pairs."""
+    dist_mat = np.asarray(dist_mat, dtype=np.float64)
+    if dist_mat.ndim != 2 or dist_mat.shape[0] != dist_mat.shape[1]:
+        raise ValueError(f"dist_mat must be square, got {dist_mat.shape}")
+    upper = dist_mat[np.triu_indices(dist_mat.shape[0], k=1)]
+    if upper.size == 0:
+        raise ValueError("distance normalization requires at least two regions")
+    mean_distance = float(upper.mean())
+    if not np.isfinite(mean_distance) or mean_distance <= 0:
+        raise ValueError("mean non-diagonal atlas distance must be positive")
+    return dist_mat / mean_distance
+
+
+def distance_local_adjacency(
+    coords: np.ndarray,
+    density: float,
+) -> np.ndarray:
+    """Build a deterministic exact-density undirected graph from distance only."""
+    if not 0.0 < density <= 1.0:
+        raise ValueError(f"local graph density must be in (0, 1], got {density}")
+    dist_mat = atlas_distance_matrix(coords)
+    n_regions = dist_mat.shape[0]
+    rows, cols = np.triu_indices(n_regions, k=1)
+    n_possible = len(rows)
+    n_keep = int(round(float(density) * n_possible))
+    n_keep = min(max(n_keep, 1), n_possible)
+
+    # Primary key: distance. Secondary keys make ties deterministic.
+    order = np.lexsort((cols, rows, dist_mat[rows, cols]))
+    keep = order[:n_keep]
+    adjacency = np.zeros((n_regions, n_regions), dtype=np.float64)
+    adjacency[rows[keep], cols[keep]] = 1.0
+    adjacency[cols[keep], rows[keep]] = 1.0
+    return adjacency
 
 
 # ── Laplacian positional encodings ────────────────────────────────────────────
@@ -135,51 +185,67 @@ def subject_to_data(
                 f"shape {connectivity.shape}; one BOLD axis must equal N={N}"
             )
 
-    # ── 1. Proportional threshold → binary A + weighted Aw ────────────────
+    # ── 1. Graph support ──────────────────────────────────────────────────
     # nan_to_num first: ABIDE has N > T so the pre-computed FC matrix can
     # contain NaN entries (zero-variance regions).  np.clip preserves NaN,
     # and nan * 0 = nan in numpy, so NaN would silently propagate into W.
     fc = np.nan_to_num(connectivity, nan=0.0, posinf=0.0, neginf=0.0)
     fc = np.clip(fc, 0.0, None)
     np.fill_diagonal(fc, 0.0)
-    A, Aw = proportional_threshold(fc, cfg.precompute.threshold_pct)
+    graph_construction = cfg.precompute.graph_construction
+    if graph_construction == "fc":
+        A, Aw = proportional_threshold(fc, cfg.precompute.threshold_pct)
+    elif graph_construction == "distance_local":
+        A = distance_local_adjacency(
+            coords,
+            cfg.precompute.local_graph_density,
+        )
+        Aw = fc * A
+    else:
+        raise ValueError(
+            "graph_construction must be 'fc' or 'distance_local', "
+            f"got {graph_construction!r}"
+        )
 
-    # ── 2. Weight matrix for measure computation ───────────────────────────
-    mode = cfg.precompute.weight_mode
-    if mode == "binary":
-        W = A
-    elif mode == "fc":
-        W = Aw
-    else:                                                # cost_penalised
-        dist_mat = cdist(coords, coords, metric="euclidean")
-
-        # λ: atlas-normalised decay constant.
-        # If not set in config, use λ = 1/d̄ where d̄ is the mean distance
-        # over connected edges — normalises the decay to the atlas scale so
-        # that exp(-λ·d) ≈ 1/e at a typical connection length.
-        lam = cfg.precompute.eco_lambda
-        if lam is None:
-            connected_dists = dist_mat[A > 0]
-            d_bar = connected_dists.mean() if len(connected_dists) > 0 else 1.0
-            lam = 1.0 / (d_bar + 1e-12)
-
-        # W_ij = FC_ij · exp(-λ · dist_ij)
-        decay = np.exp(-lam * dist_mat)
-        W = Aw * decay
-        np.fill_diagonal(W, 0.0)
-
-    # ── 3. Topological measures (only what the config needs) ───────────────
-    topo_metric_x, topo_metric_y = cfg.precompute.morphospace_pair
-    topo_metric_x_attr = MEASURE_CODE_TO_ATTR[topo_metric_x]
-    topo_metric_y_attr = MEASURE_CODE_TO_ATTR[topo_metric_y]
-
+    dist_mat = atlas_distance_matrix(coords)
     measures: dict[str, np.ndarray] = {}
-    for attr in (topo_metric_x_attr, topo_metric_y_attr):
-        fn = _COMPUTE_FN[attr]
-        m  = fn(W, eps)                                  # (N, N)
-        # Guard against NaN/Inf from singular matrices (e.g. disconnected
-        # nodes in ABIDE where N > T makes FC rank-deficient after thresholding)
-        measures[attr] = np.nan_to_num(m, nan=0.0, posinf=0.0, neginf=0.0)
+    if cfg.precompute.compute_economy:
+        # ── 2. Weight matrix for economy-measure computation ─────────────
+        mode = cfg.precompute.weight_mode
+        if mode == "binary":
+            W = A
+        elif mode == "fc":
+            W = Aw
+        elif mode == "cost_penalised":
+
+            # λ: atlas-normalised decay constant.
+            lam = cfg.precompute.eco_lambda
+            if lam is None:
+                connected_dists = dist_mat[A > 0]
+                d_bar = connected_dists.mean() if len(connected_dists) > 0 else 1.0
+                lam = 1.0 / (d_bar + 1e-12)
+
+            # W_ij = FC_ij · exp(-λ · dist_ij)
+            decay = np.exp(-lam * dist_mat)
+            W = Aw * decay
+            np.fill_diagonal(W, 0.0)
+        else:
+            raise ValueError(f"unknown weight_mode={mode!r}")
+
+        # ── 3. Economy/topological measures ───────────────────────────────
+        topo_metric_x, topo_metric_y = cfg.precompute.morphospace_pair
+        topo_metric_x_attr = MEASURE_CODE_TO_ATTR[topo_metric_x]
+        topo_metric_y_attr = MEASURE_CODE_TO_ATTR[topo_metric_y]
+
+        for attr in (topo_metric_x_attr, topo_metric_y_attr):
+            fn = _COMPUTE_FN[attr]
+            m = fn(W, eps)
+            measures[attr] = np.nan_to_num(
+                m,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
 
     # ── 4. Build bidirectional edge list ───────────────────────────────────
     rows, cols = np.where(np.triu(A, k=1) > 0)          # upper triangle
@@ -193,43 +259,47 @@ def subject_to_data(
             [mat[rows, cols], mat[cols, rows]]
         ).astype(np.float32)
 
-    fc_edges   = _edge_vals(Aw)
-    topo_metric_x_edges  = _edge_vals(measures[topo_metric_x_attr])
-    topo_metric_y_edges  = _edge_vals(measures[topo_metric_y_attr])
-
-    # Euclidean distances between region centroids for each edge.
-    # Stored so the model can compute cost-penalised eta at forward time
-    # (binary mode: eta = topological_blend / dist).
-    dist_mat   = cdist(coords, coords, metric="euclidean")
+    fc_edges = _edge_vals(Aw)
     dist_edges = _edge_vals(dist_mat)
-
-    # Phi: log-scale morphospace coordinates (E, 2)
-    phi = np.stack(
-        [np.log(topo_metric_x_edges.clip(eps, None)),
-         np.log(topo_metric_y_edges.clip(eps, None))],
-        axis=1,
-    ).astype(np.float32)
-    phi = np.nan_to_num(phi, nan=0.0, posinf=0.0, neginf=0.0)
-    if not cfg.precompute.use_morphospace:
-        phi = np.zeros_like(phi, dtype=np.float32)
 
     # ── 6. Laplacian positional encodings ─────────────────────────────────
     lap_pe = _lap_pe(A, cfg.model.k_lap)                 # (N, k)
 
     # ── 7. Assemble PyG Data ───────────────────────────────────────────────
-    data = Data(
+    data_kwargs = dict(
         num_nodes  = N,
         edge_index = torch.from_numpy(edge_index).long(),
-        phi        = torch.from_numpy(phi),
-        FC         = torch.from_numpy(fc_edges),
-        dist       = torch.from_numpy(dist_edges),
         lap_pe     = torch.from_numpy(lap_pe),
         y          = torch.tensor([label], dtype=torch.long),
         bold       = torch.from_numpy(bold.astype(np.float32)),
     )
+    if cfg.precompute.compute_economy:
+        topo_metric_x_edges = _edge_vals(measures[topo_metric_x_attr])
+        topo_metric_y_edges = _edge_vals(measures[topo_metric_y_attr])
+        phi = np.stack(
+            [
+                np.log(topo_metric_x_edges.clip(eps, None)),
+                np.log(topo_metric_y_edges.clip(eps, None)),
+            ],
+            axis=1,
+        ).astype(np.float32)
+        phi = np.nan_to_num(phi, nan=0.0, posinf=0.0, neginf=0.0)
+        if not cfg.precompute.use_morphospace:
+            phi = np.zeros_like(phi, dtype=np.float32)
+        data_kwargs.update(
+            phi=torch.from_numpy(phi),
+            FC=torch.from_numpy(fc_edges),
+            dist=torch.from_numpy(dist_edges),
+        )
+    elif cfg.model.variant == "distance_bias":
+        distance_norm = normalise_atlas_distances(dist_mat)
+        data_kwargs["edge_distance"] = torch.from_numpy(
+            _edge_vals(distance_norm)
+        )
 
-    # Attach seg/int measure tensors under their canonical attribute names
-    setattr(data, topo_metric_x_attr, torch.from_numpy(topo_metric_x_edges))
-    setattr(data, topo_metric_y_attr, torch.from_numpy(topo_metric_y_edges))
+    data = Data(**data_kwargs)
+    if cfg.precompute.compute_economy:
+        setattr(data, topo_metric_x_attr, torch.from_numpy(topo_metric_x_edges))
+        setattr(data, topo_metric_y_attr, torch.from_numpy(topo_metric_y_edges))
 
     return data

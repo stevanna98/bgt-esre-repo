@@ -23,6 +23,7 @@ MEASURE_CODE_TO_ATTR: dict[str, str] = {
 @dataclass
 class ModelConfig:
     num_regions: int
+    variant: str = "full"
     hidden_dim: int = 128
     num_classes: int = 2
     num_layers: int = 4
@@ -42,6 +43,8 @@ class ModelConfig:
     use_virtual_node: bool = False
     value_gamma_mode: str = "learned"  # "learned" | "one" | "zero"
     value_gamma_init: float = 0.01  # effective initial gamma in (-1, 1)
+    distance_bias_mode: str = "learned_monotonic"
+    distance_bias_init: float = 1.0
 
 
 @dataclass
@@ -61,6 +64,9 @@ class PrecomputeConfig:
     eps: float = 1e-8
     eco_lambda: Optional[float] = 0.1   # None → auto-computed from mean edge distance
     use_morphospace: bool = True
+    graph_construction: str = "fc"  # "fc" | "distance_local"
+    local_graph_density: float = 0.15
+    compute_economy: bool = True
 
 
 @dataclass

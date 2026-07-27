@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
     confusion_matrix,
     f1_score,
     roc_auc_score,
@@ -35,11 +36,19 @@ def compute_metrics(
     preds = logits.argmax(axis=1)     # (N,)
 
     acc  = float(accuracy_score(labels, preds))
+    balanced_acc = float(balanced_accuracy_score(labels, preds))
     f1   = float(f1_score(labels, preds, average="weighted", zero_division=0))
     auc  = _safe_auc(labels, probs, num_classes)
     sens, spec = _sens_spec(labels, preds, num_classes)
 
-    return dict(accuracy=acc, auc=auc, f1=f1, sensitivity=sens, specificity=spec)
+    return dict(
+        accuracy=acc,
+        balanced_accuracy=balanced_acc,
+        auc=auc,
+        f1=f1,
+        sensitivity=sens,
+        specificity=spec,
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
